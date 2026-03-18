@@ -107,8 +107,13 @@ def load_static_gtfs(date_str, force_download=False):
 def build_trip_lookup(trips_df, routes_df, operator_df, stop_times_df, stops_df):
     """Build a trip_id -> metadata lookup table."""
     trips_sub = trips_df[["trip_id", "route_id", "direction_id", "trip_headsign"]].copy()
-    routes_sub = routes_df[["route_id", "route_short_name", "route_long_name"]].copy()
+    rt_cols = ["route_id", "route_short_name", "route_long_name"]
+    if "route_type" in routes_df.columns:
+        rt_cols.append("route_type")
+    routes_sub = routes_df[rt_cols].copy()
     lookup = trips_sub.merge(routes_sub, on="route_id", how="left")
+    if "route_type" not in lookup.columns:
+        lookup["route_type"] = ""
 
     operator_df = operator_df.copy()
     operator_df["route_short_name"] = operator_df["route_short_name"].astype(str)
@@ -224,6 +229,7 @@ def _parse_pb_files(folder_path, trip_lookup, active_states, finished_segments):
                 operator = safe_str(row["operator"], "Övrigt")
                 first_stop_name = safe_str(row.get("first_stop_name", "-"), "-")
                 last_stop_name = safe_str(row.get("last_stop_name", "-"), "-")
+                route_type = safe_str(row.get("route_type", ""), "")
             else:
                 route_short_name = NO_TRIP_LABEL
                 trip_headsign = "-"
@@ -231,6 +237,7 @@ def _parse_pb_files(folder_path, trip_lookup, active_states, finished_segments):
                 operator = "Övrigt"
                 first_stop_name = "-"
                 last_stop_name = "-"
+                route_type = ""
 
             state = (route_short_name, direction_id)
             prev = active_states.get(vehicle_id)
@@ -247,6 +254,7 @@ def _parse_pb_files(folder_path, trip_lookup, active_states, finished_segments):
                     "operator": operator,
                     "first_stop_name": first_stop_name,
                     "last_stop_name": last_stop_name,
+                    "route_type": route_type,
                     "start_lat": lat,
                     "start_lon": lon,
                     "end_lat": lat,
@@ -264,6 +272,8 @@ def _parse_pb_files(folder_path, trip_lookup, active_states, finished_segments):
                         prev["first_stop_name"] = first_stop_name
                     if prev["last_stop_name"] == "-" and last_stop_name != "-":
                         prev["last_stop_name"] = last_stop_name
+                    if prev["route_type"] == "" and route_type != "":
+                        prev["route_type"] = route_type
                 else:
                     finished_segments.append({
                         "vehicle_id": prev["vehicle_id"],
@@ -276,6 +286,7 @@ def _parse_pb_files(folder_path, trip_lookup, active_states, finished_segments):
                         "operator": prev["operator"],
                         "first_stop_name": prev["first_stop_name"],
                         "last_stop_name": prev["last_stop_name"],
+                        "route_type": prev["route_type"],
                         "start_lat": prev["start_lat"],
                         "start_lon": prev["start_lon"],
                         "end_lat": prev["end_lat"],
@@ -292,6 +303,7 @@ def _parse_pb_files(folder_path, trip_lookup, active_states, finished_segments):
                         "operator": operator,
                         "first_stop_name": first_stop_name,
                         "last_stop_name": last_stop_name,
+                        "route_type": route_type,
                         "start_lat": lat,
                         "start_lon": lon,
                         "end_lat": lat,
@@ -359,6 +371,7 @@ def fetch_vehicle_positions(date_str, hours, trip_lookup, force_download=False):
             "operator": prev["operator"],
             "first_stop_name": prev["first_stop_name"],
             "last_stop_name": prev["last_stop_name"],
+            "route_type": prev.get("route_type", ""),
             "start_lat": prev["start_lat"],
             "start_lon": prev["start_lon"],
             "end_lat": prev["end_lat"],
@@ -387,3 +400,212 @@ def fetch_vehicle_positions(date_str, hours, trip_lookup, force_download=False):
 
     print(f"  Totalt observationer: {total_obs:,}, segment: {len(seg_df):,}")
     return seg_df
+
+
+def filter_bus_segments(seg_df, bus_route_types=None):
+    """Keep only vehicles that operate at least one bus route.
+
+    Unknown-trip segments for bus vehicles are kept (needed for deadhead detection).
+    """
+    from config import BUS_ROUTE_TYPES
+
+    if bus_route_types is None:
+        bus_route_types = BUS_ROUTE_TYPES
+
+    if "route_type" not in seg_df.columns:
+        print("  Varning: route_type saknas – ingen filtrering gjord.")
+        return seg_df
+
+    bus_vehicles = seg_df[seg_df["route_type"].isin(bus_route_types)]["vehicle_id"].unique()
+    filtered = seg_df[seg_df["vehicle_id"].isin(bus_vehicles)].copy()
+
+    n_removed = seg_df["vehicle_id"].nunique() - filtered["vehicle_id"].nunique()
+    print(f"  Bussfilter: {filtered['vehicle_id'].nunique()} bussfordon behålls, {n_removed} icke-buss borttagna")
+    return filtered.reset_index(drop=True)
+
+
+def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False):
+    """Fetch GTFS-RT TripUpdates and extract per-stop delay data.
+
+    Returns a DataFrame with columns: route_short_name, direction_id, stop_id, delay_seconds.
+    """
+    records = []
+
+    for hour in hours:
+        hour_str = f"{hour:02d}"
+        hour_7z = os.path.join(DATA_DIR, f"tu_{OPERATOR}_{date_str}_{hour_str}.7z")
+        hour_dir = os.path.join(DATA_DIR, f"tu_{OPERATOR}_{date_str}_{hour_str}")
+        url = (
+            f"https://api.koda.trafiklab.se/KoDa/api/v2/gtfs-rt/"
+            f"{OPERATOR}/TripUpdates?date={date_str}&hour={hour_str}&key={API_KEY_KODA}"
+        )
+
+        try:
+            fetch_with_retry(url, hour_7z, max_wait_minutes=20, sleep_seconds=30, force_download=force_download)
+        except Exception as e:
+            print(f"    Hoppar över TripUpdates timme {hour_str}: {e}")
+            continue
+
+        os.makedirs(hour_dir, exist_ok=True)
+        try:
+            if force_download or not folder_has_pb_files(hour_dir):
+                print(f"    Extraherar TripUpdates timme {hour_str}...")
+                with py7zr.SevenZipFile(hour_7z, mode="r") as z:
+                    z.extractall(hour_dir)
+        except Exception as e:
+            print(f"    Kunde inte extrahera TripUpdates timme {hour_str}: {e}")
+            continue
+
+        pb_files = []
+        for root, _, files_ in os.walk(hour_dir):
+            for fn in files_:
+                if fn.endswith(".pb"):
+                    full = os.path.join(root, fn)
+                    if os.path.getsize(full) > 0:
+                        pb_files.append(full)
+        pb_files = sorted(pb_files)
+
+        seen_trips = set()
+        for pb_path in pb_files:
+            feed = gtfs_realtime_pb2.FeedMessage()
+            try:
+                with open(pb_path, "rb") as f:
+                    feed.ParseFromString(f.read())
+            except Exception:
+                continue
+
+            for ent in feed.entity:
+                if not ent.HasField("trip_update"):
+                    continue
+                tu = ent.trip_update
+                trip_id = str(tu.trip.trip_id) if tu.trip.trip_id else None
+                if not trip_id or trip_id not in trip_lookup.index:
+                    continue
+
+                trip_key = trip_id
+                if trip_key in seen_trips:
+                    continue
+                seen_trips.add(trip_key)
+
+                row = trip_lookup.loc[trip_id]
+                rsn = safe_str(row["route_short_name"], None)
+                did = safe_str(row["direction_id"], "0")
+                if rsn is None or rsn == NO_TRIP_LABEL:
+                    continue
+
+                for stu in tu.stop_time_update:
+                    stop_id = str(stu.stop_id) if stu.stop_id else None
+                    if not stop_id:
+                        continue
+                    delay = None
+                    try:
+                        if stu.HasField("arrival") and stu.arrival.delay:
+                            delay = stu.arrival.delay
+                        elif stu.HasField("departure") and stu.departure.delay:
+                            delay = stu.departure.delay
+                    except Exception:
+                        pass
+                    if delay is not None:
+                        records.append({
+                            "route_short_name": rsn,
+                            "direction_id": did,
+                            "stop_id": stop_id,
+                            "delay_seconds": delay,
+                        })
+
+        print(f"    TripUpdates timme {hour_str}: {len(seen_trips)} turer, {len(records)} delay-poster totalt")
+        gc.collect()
+
+    if not records:
+        print("  Inga TripUpdates-data hittades.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+    print(f"  TripUpdates totalt: {len(df):,} delay-poster")
+    return df
+
+
+def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df=None):
+    """Build per-line stop sequences with optional delay data.
+
+    Returns a dict: {route_short_name: [{stop_id, stop_name, lat, lon, seq, avg_delay, n_obs}, ...]}
+    """
+    from config import BUS_ROUTE_TYPES
+
+    # Filter to bus routes
+    bus_routes = routes_df[routes_df["route_type"].astype(str).isin(BUS_ROUTE_TYPES)].copy()
+    if bus_routes.empty:
+        print("  Inga bussrutter hittades i GTFS.")
+        return {}
+
+    # Build route_id -> route_short_name
+    rid_to_rsn = dict(zip(bus_routes["route_id"].astype(str), bus_routes["route_short_name"].astype(str)))
+
+    # For each route, pick the trip with the most stops as representative
+    st = stop_times_df[["trip_id", "stop_id", "stop_sequence"]].copy()
+    st["stop_sequence"] = pd.to_numeric(st["stop_sequence"], errors="coerce")
+    st = st.dropna(subset=["stop_sequence"])
+
+    trips_bus = trips_df[trips_df["route_id"].astype(str).isin(rid_to_rsn)].copy()
+
+    # Pick one representative trip per (route, direction) — the one with most stops
+    trip_stop_counts = st[st["trip_id"].isin(trips_bus["trip_id"])].groupby("trip_id").size()
+    trips_bus = trips_bus.copy()
+    trips_bus["n_stops"] = trips_bus["trip_id"].map(trip_stop_counts).fillna(0)
+    trips_bus["route_short_name"] = trips_bus["route_id"].astype(str).map(rid_to_rsn)
+
+    best = (
+        trips_bus.sort_values("n_stops", ascending=False)
+        .groupby(["route_short_name", "direction_id"], as_index=False)
+        .first()
+    )
+
+    stops_small = stops_df[["stop_id", "stop_name", "stop_lat", "stop_lon"]].drop_duplicates(subset=["stop_id"])
+
+    # Build delay lookup if available
+    delay_lookup = {}
+    if delays_df is not None and not delays_df.empty:
+        agg = delays_df.groupby(["route_short_name", "stop_id"]).agg(
+            avg_delay=("delay_seconds", "mean"),
+            n_obs=("delay_seconds", "size"),
+        ).reset_index()
+        for _, r in agg.iterrows():
+            delay_lookup[(r["route_short_name"], r["stop_id"])] = {
+                "avg_delay": round(r["avg_delay"], 1),
+                "n_obs": int(r["n_obs"]),
+            }
+
+    result = {}
+    for _, trip_row in best.iterrows():
+        rsn = trip_row["route_short_name"]
+        tid = trip_row["trip_id"]
+        did = str(trip_row.get("direction_id", "0"))
+
+        trip_stops = (
+            st[st["trip_id"] == tid]
+            .sort_values("stop_sequence")
+            .merge(stops_small, on="stop_id", how="left")
+        )
+
+        stop_list = []
+        for _, s in trip_stops.iterrows():
+            delay_info = delay_lookup.get((rsn, s["stop_id"]), {"avg_delay": None, "n_obs": 0})
+            stop_list.append({
+                "stop_id": s["stop_id"],
+                "stop_name": safe_str(s["stop_name"], "?"),
+                "lat": float(s["stop_lat"]) if pd.notna(s["stop_lat"]) else None,
+                "lon": float(s["stop_lon"]) if pd.notna(s["stop_lon"]) else None,
+                "seq": int(s["stop_sequence"]),
+                "avg_delay": delay_info["avg_delay"],
+                "n_obs": delay_info["n_obs"],
+            })
+
+        key = rsn if did == "0" else f"{rsn}_r"
+        result[key] = {
+            "name": rsn,
+            "direction": did,
+            "stops": stop_list,
+        }
+
+    print(f"  Linjedata: {len(result)} linjeriktningar")
+    return result

@@ -18,6 +18,10 @@ MIN_DEADHEAD_SPEED_KMH = 2           # Min speed - slower is likely parked, not 
 MAX_DEADHEAD_DURATION_MIN = 180      # Max duration for a single deadhead (3 hours)
 MIN_DEADHEAD_DURATION_MIN = 1        # Min duration - shorter is likely GPS noise
 
+# Bus route types (standard + extended GTFS)
+# Standard: 3 = Bus.  Extended: 700 = Bus, 702 = Express, 704 = Local, etc.
+BUS_ROUTE_TYPES = {"3", "700", "702", "704", "712", "713", "714", "715", "717"}
+
 # Label constants
 NO_TRIP_LABEL = "Okänd tur"
 NO_TRIP_COLOR = "#5f6368"
