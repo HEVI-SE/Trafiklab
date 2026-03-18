@@ -28,8 +28,10 @@ NO_TRIP_COLOR = "#5f6368"
 #   Keolis   – Innerstad+Lidingö (E46), Bromma/Solna/Sundbyberg/Sollentuna (E42)
 #   Nobina   – Huddinge/Botkyrka/Söderort (E40), Nacka/Värmdö (E41),
 #              Handen/Nynäshamn (E44, from mid-2025)
+#   Nobina   – Järfälla/Upplands-Bro (E43, VR takes over Aug 2026),
+#              Södertälje/Nykvarn (E39, VR takes over Aug 2026)
 #   Transdev – Norrort: Täby/Danderyd/Vaxholm/Österåker/Vallentuna (E35),
-#              Norrtälje (E38)
+#              Norrtälje (E38), Sigtuna/Upplands Väsby/Märsta (E36)
 #   VR       – Ekerö (E32), Tyresö (E45, from Aug 2025),
 #              Järfälla/Upplands-Bro & Södertälje/Nykvarn (from Aug 2026)
 #
@@ -55,27 +57,25 @@ _KEOLIS_INNERSTAD = [
     90, 91, 92, 93, 94, 96,
 ]
 _KEOLIS_LIDINGO = [
-    201, 202, 204, 205, 206, 207, 211, 212, 221, 222,
+    201, 202, 203, 204, 205, 206, 207, 211, 212, 221, 222, 225, 233,
 ]
 
 # --- Keolis: Bromma, Solna, Sundbyberg, Sollentuna (avtalsområde E42) ---
+# 54 lines, ~130k daily boardings. Active since Aug 2024.
 _KEOLIS_BROMMA_SOLNA = [
-    113, 116, 117, 118, 119,
-    152, 153, 176, 177, 178, 179,
-    501, 503, 504, 506, 507, 508, 509,
-    510, 511, 512, 513, 514, 515,
-    520, 521, 524, 525, 526, 527, 528, 529,
-    530, 531, 532, 533, 534, 536, 537, 538, 539, 540,
-    541, 546, 547, 548, 549, 564,
-    571, "571X", 572, 573, 574, 575, 576, 577, 578, 579,
+    101, 113, 116, 117, 118, 119, 122,
+    501, 503, 504, "505", "505X", 506, 507, 508, 509,
+    510, 511, 512, 513, 514, 515, 516, 519,
+    520, "520X", 522, 523, 525, 526, 527, 528,
+    540, 592, 595, 598,
 ]
 
 # --- Nobina: Huddinge / Botkyrka / Söderort (avtalsområde E40, from Jan 2025) ---
 _NOBINA_HBS = [
-    133, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149,
-    150, 151, 152, 153, 154, 155, 156, 157, 158, 159,
+    131, 132, 133, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149,
+    150, 151, 154, 155, 156, 157, 158, 159,
     160, 161, 162, 163, 164, 165, 166, 167, 168, 169,
-    170, 171, 172, 173, 174,
+    170, 171, 172, 173, 174, 176, 177, 178, 179,
     707, 708, 709, 710, 712, 713, 714, 715,
     "715H", "715V", 716, 717, 718, 719,
     720, 721, 722, 723, 724, 725, 726, 727, 728, 729,
@@ -97,6 +97,20 @@ _NOBINA_NV = [
     471, 474, 478, 479,
     480, 481, 482, 483, 484, 485, 486, 488, 489,
     491, 492, 493, 494, 495, 496, 497, 498, 499,
+]
+
+# --- Nobina: Järfälla / Upplands-Bro (avtalsområde E43, VR takes over Aug 2026) ---
+_NOBINA_JUB = [
+    547, 548, 549, 550, 551, 552, 553, 554, 555,
+    557, 558, 559, 560, 561, 562, 563, 564, 565, 567, 568, 569,
+]
+
+# --- Nobina: Södertälje / Nykvarn (avtalsområde E39, VR takes over Aug 2026) ---
+_NOBINA_SN = [
+    750, 751, 752, 753, 754, "754X",
+    760, 761, 763, 765,
+    770, 771, 772, 773, 774, 775, 776, 777, 778, 779,
+    780, 781, 783, 784, 786, 789,
 ]
 
 # --- Nobina: Handen / Nynäshamn (avtalsområde E44, from mid-2025) ---
@@ -130,6 +144,14 @@ _TRANSDEV_NORRTALJE = [
     690, 691, 692, 693, 694, 695, 696, 697, 698, 699,
 ]
 
+# --- Transdev: Sigtuna / Upplands Väsby / Märsta (avtalsområde E36) ---
+_TRANSDEV_SIGTUNA = [
+    570, 571, "571X", 572, "573A", "573N", 574, 575, "575X",
+    576, 577, 578, 579,
+    580, "580E", 581, 582, 583, 584, 589,
+    593, 597,
+]
+
 # --- VR Sverige: Ekerö (avtalsområde E32) ---
 _VR_EKERO = [
     301, 302, 303, 304, 305, 306, 307, 308, 309,
@@ -150,9 +172,12 @@ OPERATOR_MAPPING = (
     + _expand("Keolis", _KEOLIS_BROMMA_SOLNA)
     + _expand("Nobina", _NOBINA_HBS)
     + _expand("Nobina", _NOBINA_NV)
+    + _expand("Nobina", _NOBINA_JUB)
+    + _expand("Nobina", _NOBINA_SN)
     + _expand("Nobina", _NOBINA_HN)
     + _expand("Transdev", _TRANSDEV_NORRORT)
     + _expand("Transdev", _TRANSDEV_NORRTALJE)
+    + _expand("Transdev", _TRANSDEV_SIGTUNA)
     + _expand("VR Sverige", _VR_EKERO)
     + _expand("VR Sverige", _VR_TYRESO)
 )
