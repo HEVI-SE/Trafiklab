@@ -1,4 +1,4 @@
-"""HTML report generator for deadhead analysis — dark theme with line map view."""
+"""HTML report generator — dark theme, Linjer tab (default) + Tomkörningar tab."""
 
 import json
 import os
@@ -14,199 +14,167 @@ def _period_order():
     return ["FM-topp", "Bas", "EM-topp", "Natt"]
 
 
+def _fmt_min(val):
+    """Format a duration in minutes for display, or '-' if missing."""
+    if val is None or pd.isna(val):
+        return "-"
+    return f"{val:.0f}"
+
+
+# ---------------------------------------------------------------------------
+# Tomkörningar tab helpers
+# ---------------------------------------------------------------------------
+
 def _build_summary_stats(observed, planned, segments):
-    """Build HTML for the summary statistics section."""
     total_obs = len(observed) if observed is not None and not observed.empty else 0
     total_plan = len(planned) if planned is not None and not planned.empty else 0
     total_seg = len(segments) if segments is not None and not segments.empty else 0
     n_vehicles = segments["vehicle_id"].nunique() if total_seg > 0 else 0
-
     avg_dur = observed["duration_min"].mean() if total_obs > 0 else 0
     avg_dist_km = (observed["move_m"].mean() / 1000) if total_obs > 0 else 0
     total_dead_km = (observed["move_m"].sum() / 1000) if total_obs > 0 else 0
 
     return f"""
     <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-value">{total_obs:,}</div>
-        <div class="stat-label">Observerade tomk&ouml;rningar</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{total_plan:,}</div>
-        <div class="stat-label">Planerade tomk&ouml;rningar</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{n_vehicles:,}</div>
-        <div class="stat-label">Unika fordon</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{total_seg:,}</div>
-        <div class="stat-label">Segment totalt</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{avg_dur:.1f} min</div>
-        <div class="stat-label">Snittl&auml;ngd tomk&ouml;rning</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{avg_dist_km:.1f} km</div>
-        <div class="stat-label">Snittdistans tomk&ouml;rning</div>
-      </div>
-      <div class="stat-card accent">
-        <div class="stat-value">{total_dead_km:,.0f} km</div>
-        <div class="stat-label">Total tomk&ouml;rningsdistans</div>
-      </div>
-    </div>
-    """
+      <div class="stat-card"><div class="stat-value">{total_obs:,}</div><div class="stat-label">Observerade</div></div>
+      <div class="stat-card"><div class="stat-value">{total_plan:,}</div><div class="stat-label">Planerade</div></div>
+      <div class="stat-card"><div class="stat-value">{n_vehicles:,}</div><div class="stat-label">Fordon</div></div>
+      <div class="stat-card"><div class="stat-value">{avg_dur:.1f} min</div><div class="stat-label">Snitt tid</div></div>
+      <div class="stat-card"><div class="stat-value">{avg_dist_km:.1f} km</div><div class="stat-label">Snitt distans</div></div>
+      <div class="stat-card accent"><div class="stat-value">{total_dead_km:,.0f} km</div><div class="stat-label">Total distans</div></div>
+    </div>"""
 
 
-def _build_deadhead_dropdown(observed):
-    """Build the interactive dropdown with deadhead tables grouped by stop pair and period."""
-    if observed is None or observed.empty:
-        return "<p class='empty'>Inga observerade tomk&ouml;rningar att visa.</p>"
-
+def _build_deadhead_stop_view(observed, planned):
+    """Build stop-based deadhead view: dropdown per from-stop, 8-col table per to-stop."""
     periods = _period_order()
 
-    observed = observed.copy()
-    observed["stop_pair"] = observed["from_stop_observed"] + " &rarr; " + observed["to_stop_observed"]
+    # Combine observed and planned
+    all_dead = []
+    if observed is not None and not observed.empty:
+        obs = observed[["from_stop_observed", "to_stop_observed", "duration_min", "period"]].copy()
+        obs["source"] = "obs"
+        all_dead.append(obs)
+    if planned is not None and not planned.empty:
+        pla = planned[["from_stop_observed", "to_stop_observed", "duration_min", "period"]].copy()
+        pla["source"] = "plan"
+        all_dead.append(pla)
 
-    stop_pairs = (
-        observed.groupby("stop_pair")
-        .agg(count=("vehicle_id", "size"), total_km=("move_m", "sum"))
+    if not all_dead:
+        return "<p class='empty'>Inga tomk&ouml;rningar att visa.</p>"
+
+    combined = pd.concat(all_dead, ignore_index=True)
+    combined = combined.dropna(subset=["from_stop_observed", "to_stop_observed"])
+    combined = combined[combined["from_stop_observed"] != "-"]
+    combined = combined[combined["to_stop_observed"] != "-"]
+
+    # Count per from-stop
+    from_counts = combined.groupby("from_stop_observed").size().reset_index(name="count")
+    from_counts = from_counts.sort_values("count", ascending=False)
+
+    # Build options for dropdown
+    options_html = ""
+    for _, r in from_counts.iterrows():
+        name = html_escape(r["from_stop_observed"])
+        cnt = int(r["count"])
+        options_html += f'<option value="{name}">{name} ({cnt})</option>\n'
+
+    # Aggregate: avg duration per (from, to, period, source)
+    agg = (
+        combined.groupby(["from_stop_observed", "to_stop_observed", "period", "source"])
+        .agg(avg_min=("duration_min", "mean"), count=("duration_min", "size"))
         .reset_index()
-        .sort_values("count", ascending=False)
     )
 
-    html_parts = []
-    for idx, rp_row in enumerate(stop_pairs.itertuples()):
-        pair = rp_row.stop_pair
-        count = int(rp_row.count)
-        total_km = rp_row.total_km / 1000
+    # Build JS data: {from_stop: [{to_stop, fm_plan, fm_obs, bas_plan, bas_obs, ...}, ...]}
+    js_data = {}
+    for from_stop, grp in agg.groupby("from_stop_observed"):
+        to_stops = {}
+        for _, row in grp.iterrows():
+            to_s = row["to_stop_observed"]
+            if to_s not in to_stops:
+                to_stops[to_s] = {"to": to_s}
+                for p in periods:
+                    to_stops[to_s][f"{p}_plan"] = None
+                    to_stops[to_s][f"{p}_obs"] = None
+            key = f"{row['period']}_{'plan' if row['source'] == 'plan' else 'obs'}"
+            if key in to_stops[to_s]:
+                to_stops[to_s][key] = round(row["avg_min"], 1) if pd.notna(row["avg_min"]) else None
+        js_data[from_stop] = sorted(to_stops.values(), key=lambda x: x["to"])
 
-        subset = observed[observed["stop_pair"] == pair].copy()
-
-        period_tabs = []
-        period_contents = []
-        pair_id = f"sp_{idx}"
-
-        for p_idx, period in enumerate(periods):
-            p_data = subset[subset["period"] == period]
-            p_count = len(p_data)
-            active_cls = "active" if p_idx == 0 else ""
-
-            period_tabs.append(
-                f'<button class="period-tab {active_cls}" '
-                f'onclick="switchPeriod(this, \'{pair_id}_{p_idx}\')">'
-                f'{html_escape(period)} <span class="badge">{p_count}</span></button>'
-            )
-
-            if p_data.empty:
-                table_html = f'<div id="{pair_id}_{p_idx}" class="period-content {active_cls}"><p class="empty">Inga tomk&ouml;rningar under {html_escape(period)}</p></div>'
-            else:
-                rows_html = ""
-                for _, row in p_data.sort_values("deadhead_start").iterrows():
-                    start_str = pd.to_datetime(row["deadhead_start"]).strftime("%H:%M") if pd.notna(row["deadhead_start"]) else "-"
-                    end_str = pd.to_datetime(row["deadhead_end"]).strftime("%H:%M") if pd.notna(row["deadhead_end"]) else "-"
-                    dur = f"{row['duration_min']:.0f}" if pd.notna(row.get("duration_min")) else "-"
-                    dist = f"{row['move_m'] / 1000:.1f}" if pd.notna(row.get("move_m")) else "-"
-                    speed = f"{row['speed_kmh']:.0f}" if pd.notna(row.get("speed_kmh")) else "-"
-                    prev_rt = html_escape(str(row.get("prev_route", "-")))
-                    next_rt = html_escape(str(row.get("next_route", "-")))
-                    op = html_escape(str(row.get("operator", "-")))
-                    vid = html_escape(str(row.get("vehicle_id", "-")))
-
-                    rows_html += f"""<tr>
-                      <td>{start_str}</td><td>{end_str}</td><td>{dur}</td>
-                      <td>{dist}</td><td>{speed}</td>
-                      <td>{prev_rt}</td><td>{next_rt}</td>
-                      <td>{op}</td><td class="vid">{vid}</td>
-                    </tr>"""
-
-                table_html = f"""<div id="{pair_id}_{p_idx}" class="period-content {active_cls}">
-                  <table class="data-table">
-                    <thead><tr>
-                      <th>Start</th><th>Slut</th><th>Min</th>
-                      <th>km</th><th>km/h</th>
-                      <th>F&ouml;reg. linje</th><th>N&auml;sta linje</th>
-                      <th>Operat&ouml;r</th><th>Fordon</th>
-                    </tr></thead>
-                    <tbody>{rows_html}</tbody>
-                  </table>
-                </div>"""
-
-            period_contents.append(table_html)
-
-        tabs_html = "\n".join(period_tabs)
-        contents_html = "\n".join(period_contents)
-
-        html_parts.append(f"""
-        <div class="dropdown-item">
-          <button class="dropdown-header" onclick="toggleDropdown(this)">
-            <span class="arrow">&#9654;</span>
-            <span class="route-pair">{pair}</span>
-            <span class="meta">{count} tomk&ouml;rningar &middot; {total_km:.1f} km totalt</span>
-          </button>
-          <div class="dropdown-body">
-            <div class="period-tabs">{tabs_html}</div>
-            {contents_html}
-          </div>
-        </div>
-        """)
-
-    return "\n".join(html_parts)
+    return options_html, js_data
 
 
-def _build_operator_summary(observed):
-    """Build operator summary table."""
-    if observed is None or observed.empty:
-        return ""
+def _deadhead_js(js_data):
+    """Generate JS for the deadhead stop view."""
+    data_json = json.dumps(js_data, ensure_ascii=False)
+    periods = _period_order()
 
-    op_stats = (
-        observed.groupby("operator")
-        .agg(
-            count=("vehicle_id", "size"),
-            avg_duration=("duration_min", "mean"),
-            total_km=("move_m", "sum"),
-            avg_speed=("speed_kmh", "mean"),
+    # Build header columns
+    header_cols = ""
+    for p in periods:
+        header_cols += f"'<th colspan=\"2\">{p}</th>' + "
+
+    sub_header = ""
+    for _ in periods:
+        sub_header += "'<th>Plan</th><th>Obs</th>' + "
+
+    # Build row cells
+    row_cells = ""
+    for p in periods:
+        p_key = p
+        row_cells += (
+            f"'<td>' + fmt(d['{p_key}_plan']) + '</td>' + "
+            f"'<td>' + fmt(d['{p_key}_obs']) + '</td>' + "
         )
-        .reset_index()
-        .sort_values("count", ascending=False)
-    )
-
-    rows = ""
-    for _, r in op_stats.iterrows():
-        rows += f"""<tr>
-          <td>{html_escape(r['operator'])}</td>
-          <td>{int(r['count']):,}</td>
-          <td>{r['avg_duration']:.1f}</td>
-          <td>{r['total_km'] / 1000:.1f}</td>
-          <td>{r['avg_speed']:.0f}</td>
-        </tr>"""
 
     return f"""
-    <h2>Per operat&ouml;r</h2>
-    <table class="data-table summary-table">
-      <thead><tr>
-        <th>Operat&ouml;r</th><th>Antal</th><th>Snitt min</th><th>Totalt km</th><th>Snitt km/h</th>
-      </tr></thead>
-      <tbody>{rows}</tbody>
-    </table>
+    var deadData = {data_json};
+
+    function showFromStop(name) {{
+      var el = document.getElementById('deadheadTable');
+      if (!name || !deadData[name]) {{
+        el.innerHTML = '';
+        return;
+      }}
+      var rows = deadData[name];
+      var html = '<table class="data-table"><thead>' +
+        '<tr><th rowspan="2">Till h&aring;llplats</th>' + {header_cols} '</tr>' +
+        '<tr>' + {sub_header} '</tr></thead><tbody>';
+      function fmt(v) {{
+        if (v === null || v === undefined) return '-';
+        return Math.round(v) + ' min';
+      }}
+      rows.forEach(function(d) {{
+        html += '<tr><td style="font-weight:600">' + d.to + '</td>' + {row_cells} '</tr>';
+      }});
+      html += '</tbody></table>';
+      el.innerHTML = html;
+    }}
     """
 
 
+# ---------------------------------------------------------------------------
+# Linjer tab helpers
+# ---------------------------------------------------------------------------
+
 def _build_line_tab(line_stop_data):
-    """Build the line view tab with Leaflet map and delay table."""
+    """Build the line view tab with selector, direction toggle, and map."""
     if not line_stop_data:
         return "<p class='empty'>Ingen linjedata tillg&auml;nglig.</p>"
 
-    # Build line selector options — group by line name, show directions
-    line_names = sorted(set(v["name"] for v in line_stop_data.values()),
-                        key=lambda x: (len(x), x))
+    # Group lines: line_name -> list of direction keys
+    line_dirs = {}
+    for key, info in line_stop_data.items():
+        name = info["name"]
+        if name not in line_dirs:
+            line_dirs[name] = []
+        line_dirs[name].append(key)
+
+    line_names = sorted(line_dirs.keys(), key=lambda x: (len(x), x))
     options_html = ""
     for name in line_names:
         options_html += f'<option value="{html_escape(name)}">{html_escape(name)}</option>\n'
-
-    # Serialize data for JS
-    js_data = json.dumps(line_stop_data, ensure_ascii=False)
 
     return f"""
     <div class="line-controls">
@@ -215,6 +183,10 @@ def _build_line_tab(line_stop_data):
         <option value="">-- V&auml;lj --</option>
         {options_html}
       </select>
+      <div id="dirBtns" style="display:none;margin-left:1rem">
+        <button class="period-tab active" id="dirABtn" onclick="switchDir('A')">Riktning A</button>
+        <button class="period-tab" id="dirBBtn" onclick="switchDir('B')">Riktning B</button>
+      </div>
       <span id="lineInfo" class="line-info"></span>
     </div>
     <div id="lineMap" style="height:500px;border-radius:8px;border:1px solid var(--border);margin:1rem 0;"></div>
@@ -223,13 +195,15 @@ def _build_line_tab(line_stop_data):
 
 
 def _leaflet_js(line_stop_data):
-    """Generate the JavaScript for the Leaflet map and line view interactions."""
+    """Generate JS for the Leaflet map with direction selector."""
     js_data = json.dumps(line_stop_data, ensure_ascii=False)
 
     return f"""
     var lineData = {js_data};
     var map = null;
     var lineLayer = null;
+    var currentLine = '';
+    var currentDir = 'A';
 
     function initMap() {{
       if (map) return;
@@ -256,79 +230,92 @@ def _leaflet_js(line_stop_data):
       return sign + (d/60).toFixed(1) + ' min';
     }}
 
+    function switchDir(dir) {{
+      currentDir = dir;
+      document.getElementById('dirABtn').className = 'period-tab' + (dir === 'A' ? ' active' : '');
+      document.getElementById('dirBBtn').className = 'period-tab' + (dir === 'B' ? ' active' : '');
+      renderLine();
+    }}
+
     function showLine(name) {{
       initMap();
-      if (lineLayer) {{
-        map.removeLayer(lineLayer);
-        lineLayer = null;
-      }}
+      currentLine = name;
+      currentDir = 'A';
+      document.getElementById('dirABtn').className = 'period-tab active';
+      document.getElementById('dirBBtn').className = 'period-tab';
+
+      // Check if line has two directions
+      var keys = Object.keys(lineData).filter(function(k) {{ return lineData[k].name === name; }});
+      document.getElementById('dirBtns').style.display = keys.length > 1 ? 'flex' : 'none';
+
+      renderLine();
+    }}
+
+    function renderLine() {{
+      if (lineLayer) {{ map.removeLayer(lineLayer); lineLayer = null; }}
       document.getElementById('lineStopTable').innerHTML = '';
       document.getElementById('lineInfo').textContent = '';
-
-      if (!name) return;
+      if (!currentLine) return;
 
       lineLayer = L.featureGroup();
-      var allKeys = Object.keys(lineData).filter(function(k) {{
-        return lineData[k].name === name;
-      }});
+      var wantDir = currentDir === 'A' ? '0' : '1';
+      var key = Object.keys(lineData).filter(function(k) {{
+        return lineData[k].name === currentLine && lineData[k].direction === wantDir;
+      }})[0];
+      // Fallback to first available direction
+      if (!key) {{
+        key = Object.keys(lineData).filter(function(k) {{
+          return lineData[k].name === currentLine;
+        }})[0];
+      }}
+      if (!key) return;
 
-      if (allKeys.length === 0) return;
-
-      var dirColors = ['#58a6ff', '#f0883e'];
+      var info = lineData[key];
+      var stops = info.stops;
+      var coords = [];
       var tableRows = '';
 
-      allKeys.forEach(function(key, dIdx) {{
-        var info = lineData[key];
-        var stops = info.stops;
-        var coords = [];
-        var dirLabel = info.direction === '0' ? 'Riktning A' : 'Riktning B';
+      stops.forEach(function(s) {{
+        if (s.lat === null || s.lon === null) return;
+        coords.push([s.lat, s.lon]);
+        var color = delayColor(s.avg_delay);
+        L.circleMarker([s.lat, s.lon], {{
+          radius: 7, fillColor: color, color: '#0d1117', weight: 2, fillOpacity: 0.9,
+        }}).bindPopup(
+          '<b>' + s.stop_name + '</b><br>' +
+          'H' + String.fromCharCode(229) + 'llplats ' + s.seq + '<br>' +
+          'F' + String.fromCharCode(246) + 'rsening: ' + delayLabel(s.avg_delay) +
+          (s.n_obs > 0 ? ' (' + s.n_obs + ' obs)' : '')
+        ).addTo(lineLayer);
 
-        stops.forEach(function(s, i) {{
-          if (s.lat === null || s.lon === null) return;
-          coords.push([s.lat, s.lon]);
-          var color = delayColor(s.avg_delay);
-          var radius = 7;
-          L.circleMarker([s.lat, s.lon], {{
-            radius: radius,
-            fillColor: color,
-            color: '#0d1117',
-            weight: 2,
-            fillOpacity: 0.9,
-          }}).bindPopup(
-            '<b>' + s.stop_name + '</b><br>' +
-            dirLabel + ', h\\u00e5llplats ' + s.seq + '<br>' +
-            'F\\u00f6rsening: ' + delayLabel(s.avg_delay) +
-            (s.n_obs > 0 ? ' (' + s.n_obs + ' obs)' : '')
-          ).addTo(lineLayer);
-
-          tableRows += '<tr>' +
-            '<td>' + s.seq + '</td>' +
-            '<td>' + s.stop_name + '</td>' +
-            '<td style="color:' + color + ';font-weight:600">' + delayLabel(s.avg_delay) + '</td>' +
-            '<td>' + s.n_obs + '</td>' +
-            '<td>' + dirLabel + '</td></tr>';
-        }});
-
-        if (coords.length > 1) {{
-          L.polyline(coords, {{color: dirColors[dIdx % 2], weight: 3, opacity: 0.6}}).addTo(lineLayer);
-        }}
+        tableRows += '<tr><td>' + s.seq + '</td>' +
+          '<td>' + s.stop_name + '</td>' +
+          '<td style="color:' + color + ';font-weight:600">' + delayLabel(s.avg_delay) + '</td>' +
+          '<td>' + s.n_obs + '</td></tr>';
       }});
+
+      if (coords.length > 1) {{
+        L.polyline(coords, {{color: '#58a6ff', weight: 3, opacity: 0.7}}).addTo(lineLayer);
+      }}
 
       lineLayer.addTo(map);
       if (lineLayer.getBounds().isValid()) {{
         map.fitBounds(lineLayer.getBounds(), {{padding: [30, 30]}});
       }}
 
-      document.getElementById('lineInfo').textContent = allKeys.length + ' riktning(ar), ' +
-        allKeys.reduce(function(s,k){{ return s + lineData[k].stops.length; }}, 0) + ' h\\u00e5llplatser';
-
+      document.getElementById('lineInfo').textContent = stops.length + ' h' + String.fromCharCode(229) + 'llplatser';
       document.getElementById('lineStopTable').innerHTML =
         '<table class="data-table" style="margin-top:1rem"><thead><tr>' +
-        '<th>#</th><th>H\\u00e5llplats</th><th>Snittf\\u00f6rsening</th><th>Obs</th><th>Riktning</th>' +
+        '<th>#</th><th>H' + String.fromCharCode(229) + 'llplats</th>' +
+        '<th>Snittf' + String.fromCharCode(246) + 'rsening</th><th>Obs</th>' +
         '</tr></thead><tbody>' + tableRows + '</tbody></table>';
     }}
     """
 
+
+# ---------------------------------------------------------------------------
+# Main report generator
+# ---------------------------------------------------------------------------
 
 def generate_html_report(observed, planned, segments, date_str,
                          line_stop_data=None, output_path=None):
@@ -339,8 +326,15 @@ def generate_html_report(observed, planned, segments, date_str,
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     summary_html = _build_summary_stats(observed, planned, segments)
-    operator_html = _build_operator_summary(observed)
-    dropdown_html = _build_deadhead_dropdown(observed)
+
+    # Deadhead stop view
+    dh_result = _build_deadhead_stop_view(observed, planned)
+    if isinstance(dh_result, str):
+        stop_options_html = ""
+        deadhead_table_js = "var deadData = {}; function showFromStop() {}"
+    else:
+        stop_options_html, js_data = dh_result
+        deadhead_table_js = _deadhead_js(js_data)
 
     has_line_tab = line_stop_data is not None and len(line_stop_data) > 0
     line_tab_html = _build_line_tab(line_stop_data) if has_line_tab else ""
@@ -348,363 +342,124 @@ def generate_html_report(observed, planned, segments, date_str,
 
     leaflet_css = ""
     leaflet_scripts = ""
-    line_tab_btn = ""
-    line_panel_open = ""
-    line_panel_heading = ""
-    line_panel_legend = ""
-    line_panel_close = ""
     if has_line_tab:
         leaflet_css = '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>'
         leaflet_scripts = '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>'
-        line_tab_btn = """<button class="top-tab" onclick="switchTopTab(this, 'linePanel')">Linjer</button>"""
-        line_panel_open = """<div id="linePanel" class="tab-panel">"""
-        line_panel_heading = """<h2>Linjevy med f&ouml;rsening per h&aring;llplats</h2>"""
-        line_panel_legend = (
-            """<div class="delay-legend">"""
-            """<span><span class="dot" style="background:#3fb950"></span> &le;30s</span>"""
-            """<span><span class="dot" style="background:#58a6ff"></span> 31-60s</span>"""
-            """<span><span class="dot" style="background:#d29922"></span> 1-2 min</span>"""
-            """<span><span class="dot" style="background:#f0883e"></span> 2-5 min</span>"""
-            """<span><span class="dot" style="background:#f85149"></span> &gt;5 min</span>"""
-            """<span><span class="dot" style="background:#8b949e"></span> Ingen data</span>"""
-            """</div>"""
+
+    line_tab_btn = ""
+    line_panel_html = ""
+    if has_line_tab:
+        # Linjer is the default (active) tab
+        line_tab_btn = '<button class="top-tab active" onclick="switchTopTab(this, \'linePanel\')">Linjer</button>'
+        line_panel_html = (
+            '<div id="linePanel" class="tab-panel active">'
+            '<h2>Linjevy med f&ouml;rsening per h&aring;llplats</h2>'
+            '<div class="delay-legend">'
+            '<span><span class="dot" style="background:#3fb950"></span> &le;30s</span>'
+            '<span><span class="dot" style="background:#58a6ff"></span> 31-60s</span>'
+            '<span><span class="dot" style="background:#d29922"></span> 1-2 min</span>'
+            '<span><span class="dot" style="background:#f0883e"></span> 2-5 min</span>'
+            '<span><span class="dot" style="background:#f85149"></span> &gt;5 min</span>'
+            '<span><span class="dot" style="background:#8b949e"></span> Ingen data</span>'
+            '</div>'
+            + line_tab_html +
+            '</div>'
         )
-        line_panel_close = """</div>"""
+
+    # Deadhead tab is secondary when line tab exists
+    dh_active = "" if has_line_tab else " active"
+    dh_tab_active = "" if has_line_tab else " active"
 
     html = f"""<!DOCTYPE html>
 <html lang="sv">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tomk&ouml;rningsrapport &mdash; {date_str}</title>
+<title>Rapport &mdash; {date_str}</title>
 {leaflet_css}
 <style>
   :root {{
-    --bg: #0d1117;
-    --surface: #161b22;
-    --surface2: #1c2129;
-    --border: #30363d;
-    --text: #e6edf3;
-    --text-dim: #8b949e;
-    --accent: #58a6ff;
-    --accent2: #3fb950;
-    --red: #f85149;
-    --orange: #d29922;
+    --bg: #0d1117; --surface: #161b22; --surface2: #1c2129;
+    --border: #30363d; --text: #e6edf3; --text-dim: #8b949e;
+    --accent: #58a6ff; --accent2: #3fb950; --red: #f85149; --orange: #d29922;
     --radius: 8px;
   }}
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.5;
-    padding: 2rem;
-    max-width: 1400px;
-    margin: 0 auto;
-  }}
-  h1 {{
-    font-size: 1.8rem;
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-  }}
-  h2 {{
-    font-size: 1.3rem;
-    font-weight: 600;
-    margin: 2rem 0 1rem;
-    color: var(--accent);
-  }}
-  .subtitle {{
-    color: var(--text-dim);
-    font-size: 0.9rem;
-    margin-bottom: 2rem;
-  }}
-  .stats-grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 1rem;
-    margin-bottom: 2rem;
-  }}
-  .stat-card {{
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 1.25rem;
-    text-align: center;
-  }}
-  .stat-card.accent {{
-    border-color: var(--accent);
-    background: rgba(88, 166, 255, 0.08);
-  }}
-  .stat-value {{
-    font-size: 1.6rem;
-    font-weight: 700;
-    color: var(--text);
-  }}
-  .stat-card.accent .stat-value {{ color: var(--accent); }}
-  .stat-label {{
-    font-size: 0.8rem;
-    color: var(--text-dim);
-    margin-top: 0.25rem;
-  }}
-  .data-table {{
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.85rem;
-  }}
-  .data-table th {{
-    background: var(--surface2);
-    color: var(--accent);
-    font-weight: 600;
-    text-align: left;
-    padding: 0.6rem 0.75rem;
-    border-bottom: 2px solid var(--border);
-    position: sticky;
-    top: 0;
-    white-space: nowrap;
-  }}
-  .data-table td {{
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-  }}
-  .data-table tbody tr:hover {{
-    background: rgba(88, 166, 255, 0.06);
-  }}
-  .data-table .vid {{
-    color: var(--text-dim);
-    font-family: monospace;
-    font-size: 0.8rem;
-  }}
-  .summary-table {{
-    max-width: 700px;
-  }}
-
-  /* Top-level tabs */
-  .top-tabs {{
-    display: flex;
-    gap: 0;
-    border-bottom: 2px solid var(--border);
-    margin-bottom: 2rem;
-  }}
-  .top-tab {{
-    padding: 0.75rem 1.5rem;
-    cursor: pointer;
-    color: var(--text-dim);
-    font-size: 1rem;
-    font-weight: 600;
-    border: none;
-    background: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -2px;
-    transition: all 0.15s;
-  }}
-  .top-tab:hover {{
-    color: var(--text);
-  }}
-  .top-tab.active {{
-    color: var(--accent);
-    border-bottom-color: var(--accent);
-  }}
-  .tab-panel {{
-    display: none;
-  }}
-  .tab-panel.active {{
-    display: block;
-  }}
-
-  /* Dropdown */
-  .dropdown-item {{
-    margin-bottom: 2px;
-  }}
-  .dropdown-header {{
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.8rem 1rem;
-    cursor: pointer;
-    color: var(--text);
-    font-size: 0.95rem;
-    text-align: left;
-    transition: background 0.15s;
-  }}
-  .dropdown-header:hover {{
-    background: var(--surface2);
-  }}
-  .dropdown-header .arrow {{
-    font-size: 0.7rem;
-    transition: transform 0.2s;
-    color: var(--text-dim);
-    flex-shrink: 0;
-  }}
-  .dropdown-header.open .arrow {{
-    transform: rotate(90deg);
-  }}
-  .dropdown-header .route-pair {{
-    font-weight: 600;
-    color: var(--accent);
-  }}
-  .dropdown-header .meta {{
-    color: var(--text-dim);
-    font-size: 0.8rem;
-    margin-left: auto;
-    white-space: nowrap;
-  }}
-  .dropdown-body {{
-    display: none;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 var(--radius) var(--radius);
-    padding: 1rem;
-    max-height: 500px;
-    overflow-y: auto;
-  }}
-  .dropdown-body.open {{
-    display: block;
-  }}
-
-  /* Period tabs */
-  .period-tabs {{
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-    flex-wrap: wrap;
-  }}
-  .period-tab {{
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.4rem 0.9rem;
-    cursor: pointer;
-    color: var(--text-dim);
-    font-size: 0.85rem;
-    transition: all 0.15s;
-  }}
-  .period-tab:hover {{
-    color: var(--text);
-    border-color: var(--text-dim);
-  }}
-  .period-tab.active {{
-    background: var(--accent);
-    color: var(--bg);
-    border-color: var(--accent);
-    font-weight: 600;
-  }}
-  .period-tab .badge {{
-    font-size: 0.75rem;
-    opacity: 0.8;
-    margin-left: 0.25rem;
-  }}
-  .period-content {{
-    display: none;
-  }}
-  .period-content.active {{
-    display: block;
-  }}
-  .empty {{
-    color: var(--text-dim);
-    font-style: italic;
-    padding: 1rem 0;
-  }}
-
-  /* Line view */
-  .line-controls {{
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    margin-bottom: 1rem;
-  }}
-  .line-controls label {{
-    font-weight: 600;
-    color: var(--text-dim);
-  }}
-  .line-controls select {{
-    background: var(--surface);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.5rem 1rem;
-    font-size: 0.95rem;
-    cursor: pointer;
-  }}
-  .line-info {{
-    color: var(--text-dim);
-    font-size: 0.85rem;
-  }}
-
-  /* Delay legend */
-  .delay-legend {{
-    display: flex;
-    gap: 1rem;
-    flex-wrap: wrap;
-    margin: 0.5rem 0 1rem;
-    font-size: 0.8rem;
-    color: var(--text-dim);
-  }}
-  .delay-legend span {{
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-  }}
-  .delay-legend .dot {{
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    display: inline-block;
-  }}
-
-  /* Scrollbar */
-  ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
-  ::-webkit-scrollbar-track {{ background: var(--bg); }}
-  ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 4px; }}
-  ::-webkit-scrollbar-thumb:hover {{ background: var(--text-dim); }}
-
-  @media (max-width: 768px) {{
-    body {{ padding: 1rem; }}
-    .stats-grid {{ grid-template-columns: repeat(2, 1fr); }}
-  }}
-
-  /* Leaflet overrides for dark theme */
-  .leaflet-popup-content-wrapper {{
-    background: var(--surface) !important;
-    color: var(--text) !important;
-    border-radius: var(--radius) !important;
-    border: 1px solid var(--border) !important;
-  }}
-  .leaflet-popup-content {{ color: var(--text) !important; font-size: 0.85rem !important; }}
-  .leaflet-popup-tip {{ background: var(--surface) !important; }}
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.5; padding:2rem; max-width:1400px; margin:0 auto; }}
+  h1 {{ font-size:1.8rem; font-weight:600; margin-bottom:.25rem; }}
+  h2 {{ font-size:1.3rem; font-weight:600; margin:2rem 0 1rem; color:var(--accent); }}
+  .subtitle {{ color:var(--text-dim); font-size:.9rem; margin-bottom:2rem; }}
+  .stats-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1rem; margin-bottom:2rem; }}
+  .stat-card {{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1.25rem; text-align:center; }}
+  .stat-card.accent {{ border-color:var(--accent); background:rgba(88,166,255,.08); }}
+  .stat-value {{ font-size:1.5rem; font-weight:700; }}
+  .stat-card.accent .stat-value {{ color:var(--accent); }}
+  .stat-label {{ font-size:.8rem; color:var(--text-dim); margin-top:.25rem; }}
+  .data-table {{ width:100%; border-collapse:collapse; font-size:.85rem; }}
+  .data-table th {{ background:var(--surface2); color:var(--accent); font-weight:600; text-align:left;
+    padding:.5rem .6rem; border-bottom:2px solid var(--border); position:sticky; top:0; white-space:nowrap; }}
+  .data-table td {{ padding:.4rem .6rem; border-bottom:1px solid var(--border); white-space:nowrap; }}
+  .data-table tbody tr:hover {{ background:rgba(88,166,255,.06); }}
+  .top-tabs {{ display:flex; gap:0; border-bottom:2px solid var(--border); margin-bottom:2rem; }}
+  .top-tab {{ padding:.75rem 1.5rem; cursor:pointer; color:var(--text-dim); font-size:1rem; font-weight:600;
+    border:none; background:none; border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .15s; }}
+  .top-tab:hover {{ color:var(--text); }}
+  .top-tab.active {{ color:var(--accent); border-bottom-color:var(--accent); }}
+  .tab-panel {{ display:none; }}
+  .tab-panel.active {{ display:block; }}
+  .period-tab {{ background:var(--surface2); border:1px solid var(--border); border-radius:6px;
+    padding:.4rem .9rem; cursor:pointer; color:var(--text-dim); font-size:.85rem; transition:all .15s; }}
+  .period-tab:hover {{ color:var(--text); border-color:var(--text-dim); }}
+  .period-tab.active {{ background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:600; }}
+  .empty {{ color:var(--text-dim); font-style:italic; padding:1rem 0; }}
+  .line-controls {{ display:flex; align-items:center; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; }}
+  .line-controls label {{ font-weight:600; color:var(--text-dim); }}
+  .line-controls select {{ background:var(--surface); color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:.5rem 1rem; font-size:.95rem; cursor:pointer; }}
+  .line-info {{ color:var(--text-dim); font-size:.85rem; }}
+  .delay-legend {{ display:flex; gap:1rem; flex-wrap:wrap; margin:.5rem 0 1rem; font-size:.8rem; color:var(--text-dim); }}
+  .delay-legend span {{ display:flex; align-items:center; gap:.3rem; }}
+  .delay-legend .dot {{ width:12px; height:12px; border-radius:50%; display:inline-block; }}
+  ::-webkit-scrollbar {{ width:8px; height:8px; }}
+  ::-webkit-scrollbar-track {{ background:var(--bg); }}
+  ::-webkit-scrollbar-thumb {{ background:var(--border); border-radius:4px; }}
+  .leaflet-popup-content-wrapper {{ background:var(--surface)!important; color:var(--text)!important;
+    border-radius:var(--radius)!important; border:1px solid var(--border)!important; }}
+  .leaflet-popup-content {{ color:var(--text)!important; font-size:.85rem!important; }}
+  .leaflet-popup-tip {{ background:var(--surface)!important; }}
+  @media(max-width:768px) {{ body {{ padding:1rem; }} .stats-grid {{ grid-template-columns:repeat(2,1fr); }} }}
 </style>
 </head>
 <body>
 {leaflet_scripts}
 
-<h1>Tomk&ouml;rningsrapport</h1>
-<p class="subtitle">{date_str} &middot; Genererad {now_str} &middot; Enbart buss</p>
+<h1>SL Bussrapport</h1>
+<p class="subtitle">{date_str} &middot; Genererad {now_str}</p>
 
 <div class="top-tabs">
-  <button class="top-tab active" onclick="switchTopTab(this, 'deadheadPanel')">Tomk&ouml;rningar</button>
   {line_tab_btn}
+  <button class="top-tab{dh_tab_active}" onclick="switchTopTab(this, 'deadheadPanel')">Tomk&ouml;rningar</button>
 </div>
 
-<div id="deadheadPanel" class="tab-panel active">
+{line_panel_html}
+
+<div id="deadheadPanel" class="tab-panel{dh_active}">
 {summary_html}
-{operator_html}
 
-<h2>Tomk&ouml;rningar per h&aring;llplatspar</h2>
-<p class="subtitle">Grupperat efter fr&aring;n/till-h&aring;llplats (oberoende av linje). Klicka f&ouml;r detaljer, flikar f&ouml;r trafikperiod.</p>
+<h2>Tomk&ouml;rningar per h&aring;llplats</h2>
+<p class="subtitle">V&auml;lj en avg&aring;ngsh&aring;llplats f&ouml;r att se planerade och observerade tomk&ouml;rningstider per period.</p>
 
-{dropdown_html}
+<div class="line-controls">
+  <label for="fromStopSelect">Fr&aring;n h&aring;llplats:</label>
+  <select id="fromStopSelect" onchange="showFromStop(this.value)">
+    <option value="">-- V&auml;lj --</option>
+    {stop_options_html}
+  </select>
 </div>
+<div id="deadheadTable" style="margin-top:1rem;overflow-x:auto;"></div>
 
-{line_panel_open}
-{line_panel_heading}
-{line_panel_legend}
-{line_tab_html}
-{line_panel_close}
+</div>
 
 <script>
 function switchTopTab(btn, panelId) {{
@@ -717,19 +472,7 @@ function switchTopTab(btn, panelId) {{
   }}
 }}
 
-function toggleDropdown(btn) {{
-  btn.classList.toggle('open');
-  const body = btn.nextElementSibling;
-  body.classList.toggle('open');
-}}
-
-function switchPeriod(tabBtn, contentId) {{
-  const parent = tabBtn.closest('.dropdown-body');
-  parent.querySelectorAll('.period-tab').forEach(t => t.classList.remove('active'));
-  parent.querySelectorAll('.period-content').forEach(c => c.classList.remove('active'));
-  tabBtn.classList.add('active');
-  document.getElementById(contentId).classList.add('active');
-}}
+PLACEHOLDER_DEADHEAD_JS
 
 PLACEHOLDER_LINE_JS
 </script>
@@ -737,7 +480,8 @@ PLACEHOLDER_LINE_JS
 </body>
 </html>"""
 
-    # Insert line JS (can't be in f-string due to backslash escapes in JS unicode)
+    # Insert JS blocks (can't be in f-string due to backslash/quote issues)
+    html = html.replace("PLACEHOLDER_DEADHEAD_JS", deadhead_table_js)
     html = html.replace("PLACEHOLDER_LINE_JS", line_js if has_line_tab else "")
 
     with open(output_path, "w", encoding="utf-8") as f:
