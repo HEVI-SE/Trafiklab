@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 
 from config import (
+    BUS_ROUTE_TYPES,
     MAX_DEADHEAD_DURATION_MIN,
     MAX_DEADHEAD_SPEED_KMH,
     MIN_DEADHEAD_DURATION_MIN,
@@ -238,6 +239,8 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
         print("  Inga block_id hittades i turdata.")
         return pd.DataFrame()
 
+    print(f"  {len(trips)} turer med block_id ({trips['block_id'].nunique()} block)")
+
     st = stop_times_df[["trip_id", "stop_id", "stop_sequence", "departure_time", "arrival_time"]].copy()
     st = st.dropna(subset=["trip_id", "stop_id", "stop_sequence"])
     st["stop_sequence"] = pd.to_numeric(st["stop_sequence"], errors="coerce")
@@ -265,8 +268,19 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
     trips = trips.merge(first_stops, on="trip_id", how="left")
     trips = trips.merge(last_stops, on="trip_id", how="left")
 
-    routes_sub = routes_df[["route_id", "route_short_name"]].copy()
+    # Merge route info and filter to bus routes only
+    route_cols = ["route_id", "route_short_name"]
+    if "route_type" in routes_df.columns:
+        route_cols.append("route_type")
+    routes_sub = routes_df[route_cols].copy()
     trips = trips.merge(routes_sub, on="route_id", how="left")
+
+    if "route_type" in trips.columns:
+        trips["route_type"] = trips["route_type"].astype(str).str.strip()
+        bus_mask = trips["route_type"].isin(BUS_ROUTE_TYPES)
+        n_before = len(trips)
+        trips = trips[bus_mask].reset_index(drop=True)
+        print(f"  Filtrerat till bussar: {len(trips)} av {n_before} turer")
 
     op_df = operator_df.copy()
     op_df["route_short_name"] = op_df["route_short_name"].astype(str)
