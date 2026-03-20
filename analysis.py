@@ -187,6 +187,30 @@ def build_observed_deadheads(seg_df, stops_df):
 
             speed_kmh = (move_m / 1000.0) / (duration_min / 60.0) if duration_min > 0 else 0
 
+            # Calculate dwell time at start (low-speed segments at the beginning)
+            dwell_start = 0.0
+            for seg in unknown_group:
+                s_dist = haversine_m(seg["start_lat"], seg["start_lon"],
+                                     seg["end_lat"], seg["end_lon"])
+                s_dur = (pd.to_datetime(seg["end_time"]) - pd.to_datetime(seg["start_time"])).total_seconds() / 60.0
+                s_speed = (s_dist / 1000.0) / (s_dur / 60.0) if s_dur > 0 else 0
+                if s_speed < 5.0:
+                    dwell_start += s_dur
+                else:
+                    break
+
+            # Calculate dwell time at end (low-speed segments at the end)
+            dwell_end = 0.0
+            for seg in reversed(unknown_group):
+                s_dist = haversine_m(seg["start_lat"], seg["start_lon"],
+                                     seg["end_lat"], seg["end_lon"])
+                s_dur = (pd.to_datetime(seg["end_time"]) - pd.to_datetime(seg["start_time"])).total_seconds() / 60.0
+                s_speed = (s_dist / 1000.0) / (s_dur / 60.0) if s_dur > 0 else 0
+                if s_speed < 5.0:
+                    dwell_end += s_dur
+                else:
+                    break
+
             records.append({
                 "type": "observed",
                 "vehicle_id": vehicle_id,
@@ -209,6 +233,8 @@ def build_observed_deadheads(seg_df, stops_df):
                 "to_lon": to_lon,
                 "move_m": round(move_m, 1) if move_m is not None else None,
                 "speed_kmh": round(speed_kmh, 1),
+                "dwell_start_min": round(dwell_start, 1),
+                "dwell_end_min": round(dwell_end, 1),
             })
             i = j
 
@@ -403,14 +429,30 @@ def _osrm_route_duration(lat1, lon1, lat2, lon2):
     return None
 
 
-def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_buffer_min=0):
+def build_dwell_lookup(observed_df):
+    """Build a lookup of average dwell time per stop pair from observed deadheads.
+
+    Returns dict: (from_stop, to_stop) -> avg total dwell minutes (start + end).
+    """
+    if observed_df is None or observed_df.empty:
+        return {}
+    needed = ["from_stop_observed", "to_stop_observed", "dwell_start_min", "dwell_end_min"]
+    if not all(c in observed_df.columns for c in needed):
+        return {}
+
+    df = observed_df.dropna(subset=needed).copy()
+    df["total_dwell"] = df["dwell_start_min"] + df["dwell_end_min"]
+    agg = df.groupby(["from_stop_observed", "to_stop_observed"])["total_dwell"].mean()
+    return {(f, t): round(v, 1) for (f, t), v in agg.items()}
+
+
+def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_lookup=None):
     """Filter deadheads where duration is unrealistic vs OSRM driving time.
 
     Removes deadheads that are >100% slower or >50% faster than OSRM estimate.
 
-    For planned deadheads, use dwell_buffer_min to subtract idle/dwell time
-    at terminals before comparing (e.g. 3 min at each end = 6 min total).
-    The duration_min in the DataFrame is kept unchanged for display.
+    For planned deadheads, pass dwell_lookup (from build_dwell_lookup) to
+    subtract observed dwell time per stop pair before comparing with OSRM.
     """
     if dead_df.empty:
         return dead_df
@@ -419,6 +461,9 @@ def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_buffer_mi
     if not all(c in dead_df.columns for c in needed_cols):
         print("  OSRM-filter: saknar koordinater, hoppar över.")
         return dead_df
+
+    if dwell_lookup is None:
+        dwell_lookup = {}
 
     # Get unique coordinate pairs
     coord_df = dead_df[["from_lat", "from_lon", "to_lat", "to_lon"]].dropna()
@@ -446,13 +491,17 @@ def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_buffer_mi
         osrm_min = _osrm_cache.get(key)
         if osrm_min is None or osrm_min <= 0:
             return True
-        drive_min = max(row["duration_min"] - dwell_buffer_min, 0.5)
+        # Subtract observed dwell time for this stop pair if available
+        dwell = dwell_lookup.get(
+            (row.get("from_stop_observed", ""), row.get("to_stop_observed", "")), 0
+        )
+        drive_min = max(row["duration_min"] - dwell, 0.5)
         ratio = drive_min / osrm_min
         return min_ratio <= ratio <= max_ratio
 
     mask = dead_df.apply(is_valid, axis=1)
     n_removed = (~mask).sum()
     n_cached = sum(1 for v in _osrm_cache.values() if v is not None)
-    buf_info = f" (uppehållsbuffert: {dwell_buffer_min} min)" if dwell_buffer_min > 0 else ""
-    print(f"  OSRM-filter{buf_info}: {n_removed} tomkörningar borttagna, {n_cached} rutter med OSRM-data")
+    dwell_info = f" (dötid från {len(dwell_lookup)} hållplatspar)" if dwell_lookup else ""
+    print(f"  OSRM-filter{dwell_info}: {n_removed} tomkörningar borttagna, {n_cached} rutter med OSRM-data")
     return dead_df[mask].reset_index(drop=True)

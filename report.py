@@ -285,13 +285,12 @@ def _leaflet_js(line_stop_data):
           '<b>' + s.stop_name + '</b><br>' +
           'H' + String.fromCharCode(229) + 'llplats ' + s.seq + '<br>' +
           'F' + String.fromCharCode(246) + 'rsening: ' + delayLabel(s.avg_delay) +
-          (s.n_obs > 0 ? ' (' + s.n_obs + ' obs)' : '')
+          ''
         ).addTo(lineLayer);
 
         tableRows += '<tr><td>' + s.seq + '</td>' +
           '<td>' + s.stop_name + '</td>' +
-          '<td style="color:' + color + ';font-weight:600">' + delayLabel(s.avg_delay) + '</td>' +
-          '<td>' + s.n_obs + '</td></tr>';
+          '<td style="color:' + color + ';font-weight:600">' + delayLabel(s.avg_delay) + '</td></tr>';
       }});
 
       if (coords.length > 1) {{
@@ -307,7 +306,7 @@ def _leaflet_js(line_stop_data):
       document.getElementById('lineStopTable').innerHTML =
         '<table class="data-table" style="margin-top:1rem"><thead><tr>' +
         '<th>#</th><th>H' + String.fromCharCode(229) + 'llplats</th>' +
-        '<th>Snittf' + String.fromCharCode(246) + 'rsening</th><th>Obs</th>' +
+        '<th>Snittf' + String.fromCharCode(246) + 'rsening</th>' +
         '</tr></thead><tbody>' + tableRows + '</tbody></table>';
     }}
     """
