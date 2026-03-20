@@ -403,10 +403,14 @@ def _osrm_route_duration(lat1, lon1, lat2, lon2):
     return None
 
 
-def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0):
-    """Filter deadheads where observed duration is unrealistic vs OSRM driving time.
+def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_buffer_min=0):
+    """Filter deadheads where duration is unrealistic vs OSRM driving time.
 
     Removes deadheads that are >100% slower or >50% faster than OSRM estimate.
+
+    For planned deadheads, use dwell_buffer_min to subtract idle/dwell time
+    at terminals before comparing (e.g. 3 min at each end = 6 min total).
+    The duration_min in the DataFrame is kept unchanged for display.
     """
     if dead_df.empty:
         return dead_df
@@ -442,11 +446,13 @@ def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0):
         osrm_min = _osrm_cache.get(key)
         if osrm_min is None or osrm_min <= 0:
             return True
-        ratio = row["duration_min"] / osrm_min
+        drive_min = max(row["duration_min"] - dwell_buffer_min, 0.5)
+        ratio = drive_min / osrm_min
         return min_ratio <= ratio <= max_ratio
 
     mask = dead_df.apply(is_valid, axis=1)
     n_removed = (~mask).sum()
     n_cached = sum(1 for v in _osrm_cache.values() if v is not None)
-    print(f"  OSRM-filter: {n_removed} tomkörningar borttagna, {n_cached} rutter med OSRM-data")
+    buf_info = f" (uppehållsbuffert: {dwell_buffer_min} min)" if dwell_buffer_min > 0 else ""
+    print(f"  OSRM-filter{buf_info}: {n_removed} tomkörningar borttagna, {n_cached} rutter med OSRM-data")
     return dead_df[mask].reset_index(drop=True)
