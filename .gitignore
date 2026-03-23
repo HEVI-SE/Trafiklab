@@ -1,4 +1,5 @@
 __pycache__/
 *.pyc
-data/
 .ipynb_checkpoints/
+data/*.7z
+data/*.pb

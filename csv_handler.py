@@ -1,6 +1,7 @@
 """CSV import/export with deduplication for incremental data collection."""
 
 import os
+import subprocess
 
 import pandas as pd
 
@@ -9,6 +10,57 @@ from config import DATA_DIR
 
 SEGMENTS_CSV = os.path.join(DATA_DIR, "all_segments.csv")
 DEADHEADS_CSV = os.path.join(DATA_DIR, "all_deadheads.csv")
+OSRM_CSV = os.path.join(DATA_DIR, "osrm_cache.csv")
+
+
+def push_data_to_git(message="Update cached data"):
+    """Commit and push data/ CSV files to the current branch.
+
+    Retries up to 4 times with exponential backoff on push failure.
+    """
+    import time as _time
+
+    data_files = [SEGMENTS_CSV, DEADHEADS_CSV, OSRM_CSV]
+    existing = [f for f in data_files if os.path.exists(f)]
+    if not existing:
+        print("  Git push: inga data-filer att pusha.")
+        return False
+
+    try:
+        subprocess.run(["git", "add"] + existing, check=True, capture_output=True)
+        # Check if there are staged changes
+        result = subprocess.run(["git", "diff", "--cached", "--quiet"], capture_output=True)
+        if result.returncode == 0:
+            print("  Git push: inga ändringar att committa.")
+            return True
+
+        subprocess.run(
+            ["git", "commit", "-m", message],
+            check=True, capture_output=True,
+        )
+
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        for attempt in range(4):
+            result = subprocess.run(
+                ["git", "push", "-u", "origin", branch],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print(f"  Git push: data pushad till {branch}")
+                return True
+            wait = 2 ** (attempt + 1)
+            print(f"  Git push försök {attempt + 1} misslyckades, väntar {wait}s...")
+            _time.sleep(wait)
+
+        print(f"  Git push: kunde inte pusha efter 4 försök. Error: {result.stderr[:200]}")
+        return False
+    except Exception as e:
+        print(f"  Git push: fel - {e}")
+        return False
 
 
 def save_segments(seg_df, path=None):
