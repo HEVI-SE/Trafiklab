@@ -1,5 +1,6 @@
 """Deadhead (tomkörning) analysis module with safety checks and OSRM filtering."""
 
+import os
 import time
 
 import pandas as pd
@@ -271,10 +272,13 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
     st = st.dropna(subset=["trip_id", "stop_id", "stop_sequence"])
     st["stop_sequence"] = pd.to_numeric(st["stop_sequence"], errors="coerce")
 
+    st_sorted = st.sort_values(["trip_id", "stop_sequence"])
+
+    # Use drop_duplicates instead of groupby().first()/last() — the latter
+    # skips NaN per column which can mix values from different rows.
     first_stops = (
-        st.sort_values(["trip_id", "stop_sequence"])
-        .groupby("trip_id", as_index=False)
-        .first()
+        st_sorted
+        .drop_duplicates(subset=["trip_id"], keep="first")
         .rename(columns={
             "stop_id": "first_stop_id",
             "departure_time": "first_departure",
@@ -282,14 +286,15 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
     )
 
     last_stops = (
-        st.sort_values(["trip_id", "stop_sequence"])
-        .groupby("trip_id", as_index=False)
-        .last()
-        .rename(columns={
-            "stop_id": "last_stop_id",
-            "arrival_time": "last_arrival",
-        })[["trip_id", "last_stop_id", "last_arrival"]]
+        st_sorted
+        .drop_duplicates(subset=["trip_id"], keep="last")
+        .copy()
     )
+    # Use arrival_time for last stop; fall back to departure_time if missing
+    last_stops["last_arrival"] = last_stops["arrival_time"].fillna(last_stops["departure_time"])
+    last_stops = last_stops.rename(columns={
+        "stop_id": "last_stop_id",
+    })[["trip_id", "last_stop_id", "last_arrival"]]
 
     trips = trips.merge(first_stops, on="trip_id", how="left")
     trips = trips.merge(last_stops, on="trip_id", how="left")
@@ -392,6 +397,13 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
     if dead_df.empty:
         return dead_df
 
+    n_with_dur = dead_df["duration_min"].notna().sum()
+    print(f"  Planerade tomkörningar: {len(dead_df)} totalt, {n_with_dur} med restid")
+    if n_with_dur > 0:
+        valid = dead_df[dead_df["duration_min"].notna()]
+        print(f"  Restid: snitt {valid['duration_min'].mean():.1f} min, "
+              f"median {valid['duration_min'].median():.1f} min")
+
     dead_df["deadhead_label"] = dead_df.apply(
         lambda r: f"{r['from_stop_observed']} \u2192 {r['to_stop_observed']}", axis=1
     )
@@ -403,6 +415,38 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
 # ---------------------------------------------------------------------------
 
 _osrm_cache = {}
+_OSRM_CSV = os.path.join("data", "osrm_cache.csv")
+
+
+def _load_osrm_cache():
+    """Load OSRM route durations from CSV cache."""
+    global _osrm_cache
+    if _osrm_cache:
+        return  # already loaded
+    if not os.path.exists(_OSRM_CSV):
+        return
+    try:
+        df = pd.read_csv(_OSRM_CSV)
+        for _, r in df.iterrows():
+            key = (r["from_lat"], r["from_lon"], r["to_lat"], r["to_lon"])
+            val = r["duration_min"] if pd.notna(r["duration_min"]) else None
+            _osrm_cache[key] = val
+        print(f"  OSRM-cache: {len(_osrm_cache)} rutter laddade från {_OSRM_CSV}")
+    except Exception as e:
+        print(f"  Kunde inte ladda OSRM-cache: {e}")
+
+
+def _save_osrm_cache():
+    """Save OSRM route durations to CSV cache."""
+    if not _osrm_cache:
+        return
+    os.makedirs("data", exist_ok=True)
+    rows = []
+    for (la1, lo1, la2, lo2), dur in _osrm_cache.items():
+        rows.append({"from_lat": la1, "from_lon": lo1, "to_lat": la2, "to_lon": lo2,
+                      "duration_min": dur})
+    pd.DataFrame(rows).to_csv(_OSRM_CSV, index=False)
+    print(f"  OSRM-cache: {len(rows)} rutter sparade till {_OSRM_CSV}")
 
 
 def _osrm_route_duration(lat1, lon1, lat2, lon2):
@@ -474,14 +518,21 @@ def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_lookup=No
         .unique()
     )
 
-    print(f"  OSRM: frågar {len(pairs)} unika rutter...")
-    for i, (la1, lo1, la2, lo2) in enumerate(pairs):
+    _load_osrm_cache()
+
+    # Only query pairs not already in cache
+    new_pairs = [p for p in pairs if p not in _osrm_cache]
+    print(f"  OSRM: {len(pairs)} unika rutter ({len(pairs) - len(new_pairs)} cachade, {len(new_pairs)} nya)...")
+    for i, (la1, lo1, la2, lo2) in enumerate(new_pairs):
         _osrm_route_duration(la1, lo1, la2, lo2)
         if (i + 1) % 50 == 0:
-            print(f"    {i + 1}/{len(pairs)} klara")
+            print(f"    {i + 1}/{len(new_pairs)} klara")
             time.sleep(0.5)  # Be nice to the public server
         elif (i + 1) % 10 == 0:
             time.sleep(0.1)
+
+    if new_pairs:
+        _save_osrm_cache()
 
     def is_valid(row):
         if pd.isna(row.get("from_lat")) or pd.isna(row.get("duration_min")):
