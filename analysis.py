@@ -354,20 +354,7 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
             if move_m is not None and move_m < MIN_DEADHEAD_MOVE_METERS:
                 continue
 
-            # Calculate planned duration from GTFS times
-            t_start = _parse_gtfs_time_to_minutes(curr.get("last_arrival"))
-            t_end = _parse_gtfs_time_to_minutes(nxt.get("first_departure"))
-            duration_min = None
-            if t_start is not None and t_end is not None:
-                duration_min = round(t_end - t_start, 1)
-                if duration_min < 0:
-                    duration_min = None
-
             period = _period_from_gtfs_time(curr.get("last_arrival"))
-
-            speed_kmh = None
-            if duration_min and duration_min > 0 and move_m:
-                speed_kmh = round((move_m / 1000.0) / (duration_min / 60.0), 1)
 
             records.append({
                 "type": "planned",
@@ -381,7 +368,6 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
                 "next_first_stop_planned": safe_str(nxt.get("first_stop_name", "-")),
                 "deadhead_start": curr.get("last_arrival", "-"),
                 "deadhead_end": nxt.get("first_departure", "-"),
-                "duration_min": duration_min,
                 "period": period,
                 "from_stop_observed": safe_str(curr.get("last_stop_name", "-")),
                 "to_stop_observed": safe_str(nxt.get("first_stop_name", "-")),
@@ -390,19 +376,13 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
                 "to_lat": float(first_lat) if pd.notna(first_lat) else None,
                 "to_lon": float(first_lon) if pd.notna(first_lon) else None,
                 "move_m": round(move_m, 1) if move_m is not None else None,
-                "speed_kmh": speed_kmh,
             })
 
     dead_df = pd.DataFrame(records)
     if dead_df.empty:
         return dead_df
 
-    n_with_dur = dead_df["duration_min"].notna().sum()
-    print(f"  Planerade tomkörningar: {len(dead_df)} totalt, {n_with_dur} med restid")
-    if n_with_dur > 0:
-        valid = dead_df[dead_df["duration_min"].notna()]
-        print(f"  Restid: snitt {valid['duration_min'].mean():.1f} min, "
-              f"median {valid['duration_min'].median():.1f} min")
+    print(f"  Planerade tomkörningar: {len(dead_df)} totalt")
 
     dead_df["deadhead_label"] = dead_df.apply(
         lambda r: f"{r['from_stop_observed']} \u2192 {r['to_stop_observed']}", axis=1
@@ -501,13 +481,15 @@ def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_lookup=No
     if dead_df.empty:
         return dead_df
 
-    needed_cols = ["from_lat", "from_lon", "to_lat", "to_lon", "duration_min"]
+    needed_cols = ["from_lat", "from_lon", "to_lat", "to_lon"]
     if not all(c in dead_df.columns for c in needed_cols):
         print("  OSRM-filter: saknar koordinater, hoppar över.")
         return dead_df
 
     if dwell_lookup is None:
         dwell_lookup = {}
+
+    has_duration = "duration_min" in dead_df.columns
 
     # Get unique coordinate pairs
     coord_df = dead_df[["from_lat", "from_lon", "to_lat", "to_lon"]].dropna()
@@ -534,25 +516,40 @@ def filter_deadheads_osrm(dead_df, min_ratio=0.5, max_ratio=2.0, dwell_lookup=No
     if new_pairs:
         _save_osrm_cache()
 
-    def is_valid(row):
-        if pd.isna(row.get("from_lat")) or pd.isna(row.get("duration_min")):
-            return True
+    # Add OSRM estimated driving time column
+    def get_osrm(row):
+        if pd.isna(row.get("from_lat")):
+            return None
         key = (round(row["from_lat"], 4), round(row["from_lon"], 4),
                round(row["to_lat"], 4), round(row["to_lon"], 4))
-        osrm_min = _osrm_cache.get(key)
-        if osrm_min is None or osrm_min <= 0:
-            return True
-        # Subtract observed dwell time for this stop pair if available
-        dwell = dwell_lookup.get(
-            (row.get("from_stop_observed", ""), row.get("to_stop_observed", "")), 0
-        )
-        drive_min = max(row["duration_min"] - dwell, 0.5)
-        ratio = drive_min / osrm_min
-        return min_ratio <= ratio <= max_ratio
+        val = _osrm_cache.get(key)
+        return round(val, 1) if val is not None else None
 
-    mask = dead_df.apply(is_valid, axis=1)
-    n_removed = (~mask).sum()
-    n_cached = sum(1 for v in _osrm_cache.values() if v is not None)
+    dead_df = dead_df.copy()
+    dead_df["beräknad_körtid_min"] = dead_df.apply(get_osrm, axis=1)
+
+    # Filter only if we have duration_min to compare against
+    if has_duration:
+        def is_valid(row):
+            if pd.isna(row.get("from_lat")) or pd.isna(row.get("duration_min")):
+                return True
+            osrm_min = row.get("beräknad_körtid_min")
+            if osrm_min is None or pd.isna(osrm_min) or osrm_min <= 0:
+                return True
+            dwell = dwell_lookup.get(
+                (row.get("from_stop_observed", ""), row.get("to_stop_observed", "")), 0
+            )
+            drive_min = max(row["duration_min"] - dwell, 0.5)
+            ratio = drive_min / osrm_min
+            return min_ratio <= ratio <= max_ratio
+
+        mask = dead_df.apply(is_valid, axis=1)
+        n_removed = (~mask).sum()
+        dead_df = dead_df[mask].reset_index(drop=True)
+    else:
+        n_removed = 0
+
+    n_with_osrm = dead_df["beräknad_körtid_min"].notna().sum()
     dwell_info = f" (dötid från {len(dwell_lookup)} hållplatspar)" if dwell_lookup else ""
-    print(f"  OSRM-filter{dwell_info}: {n_removed} tomkörningar borttagna, {n_cached} rutter med OSRM-data")
-    return dead_df[mask].reset_index(drop=True)
+    print(f"  OSRM-filter{dwell_info}: {n_removed} borttagna, {n_with_osrm}/{len(dead_df)} med beräknad körtid")
+    return dead_df

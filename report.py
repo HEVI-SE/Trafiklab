@@ -56,7 +56,16 @@ def _build_deadhead_stop_view(observed, planned):
         obs["source"] = "obs"
         all_dead.append(obs)
     if planned is not None and not planned.empty:
-        pla = planned[["from_stop_observed", "to_stop_observed", "duration_min", "period"]].copy()
+        pla_cols = ["from_stop_observed", "to_stop_observed", "period"]
+        # Use beräknad_körtid_min as duration for planned (no GTFS duration)
+        if "beräknad_körtid_min" in planned.columns:
+            pla = planned[pla_cols + ["beräknad_körtid_min"]].copy()
+            pla = pla.rename(columns={"beräknad_körtid_min": "duration_min"})
+        elif "duration_min" in planned.columns:
+            pla = planned[pla_cols + ["duration_min"]].copy()
+        else:
+            pla = planned[pla_cols].copy()
+            pla["duration_min"] = None
         pla["source"] = "plan"
         all_dead.append(pla)
 
