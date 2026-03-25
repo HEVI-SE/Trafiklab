@@ -41,6 +41,14 @@ def classify_period(ts):
     return "Bas"
 
 
+def classify_day_type(ts):
+    """Classify a timestamp as weekday (Vardag) or weekend (Helg)."""
+    if pd.isna(ts):
+        return "Vardag"
+    ts = pd.to_datetime(ts)
+    return "Helg" if ts.dayofweek >= 5 else "Vardag"
+
+
 def html_escape(s):
     """Escape HTML special characters."""
     if s is None:

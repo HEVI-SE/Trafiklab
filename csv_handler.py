@@ -27,6 +27,20 @@ def push_data_to_git(message="Update cached data"):
         return False
 
     try:
+        # Ensure git user is configured (needed in Colab / CI environments)
+        result = subprocess.run(
+            ["git", "config", "user.email"], capture_output=True, text=True
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            subprocess.run(
+                ["git", "config", "user.email", "trafiklab-bot@hevi.se"],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Trafiklab Bot"],
+                check=True, capture_output=True,
+            )
+
         subprocess.run(["git", "add"] + existing, check=True, capture_output=True)
         # Check if there are staged changes
         result = subprocess.run(["git", "diff", "--cached", "--quiet"], capture_output=True)

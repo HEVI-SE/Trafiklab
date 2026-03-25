@@ -25,120 +25,139 @@ def _fmt_min(val):
 # Tomkörningar tab helpers
 # ---------------------------------------------------------------------------
 
-def _build_summary_stats(observed, planned, segments):
+def _build_summary_stats(observed, segments, dates=None, hours=None):
     total_obs = len(observed) if observed is not None and not observed.empty else 0
-    total_plan = len(planned) if planned is not None and not planned.empty else 0
-    total_seg = len(segments) if segments is not None and not segments.empty else 0
-    n_vehicles = segments["vehicle_id"].nunique() if total_seg > 0 else 0
-    avg_dur = observed["duration_min"].mean() if total_obs > 0 else 0
-    avg_dist_km = (observed["move_m"].mean() / 1000) if total_obs > 0 else 0
-    total_dead_km = (observed["move_m"].sum() / 1000) if total_obs > 0 else 0
+
+    # Unique stop pairs
+    if total_obs > 0:
+        unique_pairs = observed.drop_duplicates(
+            subset=["from_stop_observed", "to_stop_observed"]
+        ).shape[0]
+    else:
+        unique_pairs = 0
+
+    # Analysed hours
+    n_hours = len(hours) * len(dates) if hours and dates else 0
+
+    # Date range
+    if dates:
+        start_date = min(dates)
+        end_date = max(dates)
+        date_range = f"{start_date} &ndash; {end_date}" if start_date != end_date else start_date
+    else:
+        date_range = "-"
 
     return f"""
     <div class="stats-grid">
-      <div class="stat-card"><div class="stat-value">{total_obs:,}</div><div class="stat-label">Observerade</div></div>
-      <div class="stat-card"><div class="stat-value">{total_plan:,}</div><div class="stat-label">Planerade</div></div>
-      <div class="stat-card"><div class="stat-value">{n_vehicles:,}</div><div class="stat-label">Fordon</div></div>
-      <div class="stat-card"><div class="stat-value">{avg_dur:.1f} min</div><div class="stat-label">Snitt tid</div></div>
-      <div class="stat-card"><div class="stat-value">{avg_dist_km:.1f} km</div><div class="stat-label">Snitt distans</div></div>
-      <div class="stat-card accent"><div class="stat-value">{total_dead_km:,.0f} km</div><div class="stat-label">Total distans</div></div>
+      <div class="stat-card"><div class="stat-value">{total_obs:,}</div><div class="stat-label">Observerade tomk&ouml;rningar</div></div>
+      <div class="stat-card"><div class="stat-value">{unique_pairs:,}</div><div class="stat-label">Unika tomk&ouml;rningar</div></div>
+      <div class="stat-card"><div class="stat-value">{n_hours}</div><div class="stat-label">Analyserade timmar</div></div>
+      <div class="stat-card accent"><div class="stat-value">{date_range}</div><div class="stat-label">Analysperiod</div></div>
     </div>"""
 
 
-def _build_deadhead_stop_view(observed, planned):
-    """Build stop-based deadhead view: dropdown per from-stop, 8-col table per to-stop."""
+def _build_deadhead_stop_view(observed):
+    """Build stop-based deadhead view with Vardag/Helg separation and OSRM time."""
     periods = _period_order()
 
-    # Combine observed and planned
-    all_dead = []
-    if observed is not None and not observed.empty:
-        obs = observed[["from_stop_observed", "to_stop_observed", "duration_min", "period"]].copy()
-        obs["source"] = "obs"
-        all_dead.append(obs)
-    if planned is not None and not planned.empty:
-        pla_cols = ["from_stop_observed", "to_stop_observed", "period"]
-        # Use beräknad_körtid_min as duration for planned (no GTFS duration)
-        if "beräknad_körtid_min" in planned.columns:
-            pla = planned[pla_cols + ["beräknad_körtid_min"]].copy()
-            pla = pla.rename(columns={"beräknad_körtid_min": "duration_min"})
-        elif "duration_min" in planned.columns:
-            pla = planned[pla_cols + ["duration_min"]].copy()
-        else:
-            pla = planned[pla_cols].copy()
-            pla["duration_min"] = None
-        pla["source"] = "plan"
-        all_dead.append(pla)
-
-    if not all_dead:
+    if observed is None or observed.empty:
         return "<p class='empty'>Inga tomk&ouml;rningar att visa.</p>"
 
-    combined = pd.concat(all_dead, ignore_index=True)
-    combined = combined.dropna(subset=["from_stop_observed", "to_stop_observed"])
-    combined = combined[combined["from_stop_observed"] != "-"]
-    combined = combined[combined["to_stop_observed"] != "-"]
+    cols = ["from_stop_observed", "to_stop_observed", "duration_min", "period"]
+    if "day_type" in observed.columns:
+        cols.append("day_type")
+    if "beräknad_körtid_min" in observed.columns:
+        cols.append("beräknad_körtid_min")
+    obs = observed[cols].copy()
+    if "day_type" not in obs.columns:
+        obs["day_type"] = "Vardag"
+
+    obs = obs.dropna(subset=["from_stop_observed", "to_stop_observed"])
+    obs = obs[obs["from_stop_observed"] != "-"]
+    obs = obs[obs["to_stop_observed"] != "-"]
+
+    if obs.empty:
+        return "<p class='empty'>Inga tomk&ouml;rningar att visa.</p>"
 
     # Count per from-stop
-    from_counts = combined.groupby("from_stop_observed").size().reset_index(name="count")
+    from_counts = obs.groupby("from_stop_observed").size().reset_index(name="count")
     from_counts = from_counts.sort_values("count", ascending=False)
 
-    # Build options for dropdown
     options_html = ""
     for _, r in from_counts.iterrows():
         name = html_escape(r["from_stop_observed"])
         cnt = int(r["count"])
         options_html += f'<option value="{name}">{name} ({cnt})</option>\n'
 
-    # Aggregate: avg duration per (from, to, period, source)
+    # Aggregate: avg duration per (from, to, period, day_type)
     agg = (
-        combined.groupby(["from_stop_observed", "to_stop_observed", "period", "source"])
+        obs.groupby(["from_stop_observed", "to_stop_observed", "period", "day_type"])
         .agg(avg_min=("duration_min", "mean"), count=("duration_min", "size"))
         .reset_index()
     )
 
-    # Build JS data: {from_stop: [{to_stop, fm_plan, fm_obs, bas_plan, bas_obs, ...}, ...]}
+    # OSRM average per (from, to) — same regardless of period/day_type
+    osrm_agg = {}
+    if "beräknad_körtid_min" in obs.columns:
+        osrm_tmp = (
+            obs.dropna(subset=["beräknad_körtid_min"])
+            .groupby(["from_stop_observed", "to_stop_observed"])["beräknad_körtid_min"]
+            .mean()
+        )
+        for (f, t), v in osrm_tmp.items():
+            osrm_agg[(f, t)] = round(v, 1)
+
+    # Build JS data: {from_stop: [{to, vardag: {FM-topp: X, ...}, helg: {...}, osrm: X}, ...]}
     js_data = {}
     for from_stop, grp in agg.groupby("from_stop_observed"):
         to_stops = {}
         for _, row in grp.iterrows():
             to_s = row["to_stop_observed"]
             if to_s not in to_stops:
-                to_stops[to_s] = {"to": to_s}
-                for p in periods:
-                    to_stops[to_s][f"{p}_plan"] = None
-                    to_stops[to_s][f"{p}_obs"] = None
-            key = f"{row['period']}_{'plan' if row['source'] == 'plan' else 'obs'}"
-            if key in to_stops[to_s]:
-                to_stops[to_s][key] = round(row["avg_min"], 1) if pd.notna(row["avg_min"]) else None
+                to_stops[to_s] = {
+                    "to": to_s,
+                    "vardag": {p: None for p in periods},
+                    "helg": {p: None for p in periods},
+                    "osrm": osrm_agg.get((from_stop, to_s)),
+                }
+            day_key = "vardag" if row["day_type"] == "Vardag" else "helg"
+            if row["period"] in to_stops[to_s][day_key]:
+                to_stops[to_s][day_key][row["period"]] = (
+                    round(row["avg_min"], 1) if pd.notna(row["avg_min"]) else None
+                )
         js_data[from_stop] = sorted(to_stops.values(), key=lambda x: x["to"])
 
     return options_html, js_data
 
 
 def _deadhead_js(js_data):
-    """Generate JS for the deadhead stop view."""
+    """Generate JS for the deadhead stop view with Vardag/Helg toggle and OSRM column."""
     data_json = json.dumps(js_data, ensure_ascii=False)
     periods = _period_order()
 
     # Build header columns
     header_cols = ""
     for p in periods:
-        header_cols += f"'<th colspan=\"2\">{p}</th>' + "
+        header_cols += f"'<th>{p}</th>' + "
+    header_cols += "'<th>Ber&auml;knad tid</th>' + "
 
-    sub_header = ""
-    for _ in periods:
-        sub_header += "'<th>Plan</th><th>Obs</th>' + "
-
-    # Build row cells
+    # Build row cells — reads from the day_type sub-object
     row_cells = ""
     for p in periods:
-        p_key = p
-        row_cells += (
-            f"'<td>' + fmt(d['{p_key}_plan']) + '</td>' + "
-            f"'<td>' + fmt(d['{p_key}_obs']) + '</td>' + "
-        )
+        row_cells += f"'<td>' + fmt(dayObj['{p}']) + '</td>' + "
+    row_cells += "'<td style=\"color:var(--text-dim)\">' + fmt(d.osrm) + '</td>' + "
 
     return f"""
     var deadData = {data_json};
+    var currentDayType = 'vardag';
+
+    function switchDayType(dt) {{
+      currentDayType = dt;
+      document.getElementById('dayVardag').className = 'period-tab' + (dt === 'vardag' ? ' active' : '');
+      document.getElementById('dayHelg').className = 'period-tab' + (dt === 'helg' ? ' active' : '');
+      var sel = document.getElementById('fromStopSelect');
+      if (sel.value) showFromStop(sel.value);
+    }}
 
     function showFromStop(name) {{
       var el = document.getElementById('deadheadTable');
@@ -148,13 +167,14 @@ def _deadhead_js(js_data):
       }}
       var rows = deadData[name];
       var html = '<table class="data-table"><thead>' +
-        '<tr><th rowspan="2">Till h&aring;llplats</th>' + {header_cols} '</tr>' +
-        '<tr>' + {sub_header} '</tr></thead><tbody>';
+        '<tr><th>Till h&aring;llplats</th>' + {header_cols} '</tr>' +
+        '</thead><tbody>';
       function fmt(v) {{
         if (v === null || v === undefined) return '-';
         return Math.round(v) + ' min';
       }}
       rows.forEach(function(d) {{
+        var dayObj = d[currentDayType] || {{}};
         html += '<tr><td style="font-weight:600">' + d.to + '</td>' + {row_cells} '</tr>';
       }});
       html += '</tbody></table>';
@@ -326,17 +346,18 @@ def _leaflet_js(line_stop_data):
 # ---------------------------------------------------------------------------
 
 def generate_html_report(observed, planned, segments, date_str,
-                         line_stop_data=None, output_path=None):
+                         line_stop_data=None, output_path=None,
+                         dates=None, hours=None):
     """Generate a complete dark-themed HTML report and return the file path."""
     if output_path is None:
         output_path = os.path.join(DATA_DIR, f"tomkorning_rapport_{date_str}.html")
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    summary_html = _build_summary_stats(observed, planned, segments)
+    summary_html = _build_summary_stats(observed, segments, dates=dates, hours=hours)
 
     # Deadhead stop view
-    dh_result = _build_deadhead_stop_view(observed, planned)
+    dh_result = _build_deadhead_stop_view(observed)
     if isinstance(dh_result, str):
         stop_options_html = ""
         deadhead_table_js = "var deadData = {}; function showFromStop() {}"
@@ -456,7 +477,7 @@ def generate_html_report(observed, planned, segments, date_str,
 {summary_html}
 
 <h2>Tomk&ouml;rningar per h&aring;llplats</h2>
-<p class="subtitle">V&auml;lj en avg&aring;ngsh&aring;llplats f&ouml;r att se planerade och observerade tomk&ouml;rningstider per period.</p>
+<p class="subtitle">V&auml;lj en avg&aring;ngsh&aring;llplats f&ouml;r att se observerade tomk&ouml;rningstider per period. Ber&auml;knad tid &auml;r OSRM-baserad k&ouml;rtid.</p>
 
 <div class="line-controls">
   <label for="fromStopSelect">Fr&aring;n h&aring;llplats:</label>
@@ -464,6 +485,8 @@ def generate_html_report(observed, planned, segments, date_str,
     <option value="">-- V&auml;lj --</option>
     {stop_options_html}
   </select>
+  <button class="period-tab active" id="dayVardag" onclick="switchDayType('vardag')">Vardag</button>
+  <button class="period-tab" id="dayHelg" onclick="switchDayType('helg')">Helg</button>
 </div>
 <div id="deadheadTable" style="margin-top:1rem;overflow-x:auto;"></div>
 

@@ -15,7 +15,7 @@ from config import (
     MIN_DEADHEAD_SPEED_KMH,
     NO_TRIP_LABEL,
 )
-from utils import classify_period, haversine_m, safe_str
+from utils import classify_day_type, classify_period, haversine_m, safe_str
 
 
 def nearest_stop_name(lat, lon, stops_df):
@@ -226,6 +226,7 @@ def build_observed_deadheads(seg_df, stops_df):
                 "deadhead_end": deadhead_end,
                 "duration_min": duration_min,
                 "period": classify_period(deadhead_start),
+                "day_type": classify_day_type(deadhead_start),
                 "from_stop_observed": safe_str(from_stop_obs, "-"),
                 "to_stop_observed": safe_str(to_stop_obs, "-"),
                 "from_lat": from_lat,
@@ -356,6 +357,9 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
 
             period = _period_from_gtfs_time(curr.get("last_arrival"))
 
+            # Planned deadheads don't have real timestamps, so day_type
+            # is derived from the service_id / calendar if available later.
+            # Default to "Vardag" for planned.
             records.append({
                 "type": "planned",
                 "vehicle_id": f"block_{block_id}",
@@ -369,6 +373,7 @@ def build_planned_deadheads(trips_df, stop_times_df, stops_df, routes_df, operat
                 "deadhead_start": curr.get("last_arrival", "-"),
                 "deadhead_end": nxt.get("first_departure", "-"),
                 "period": period,
+                "day_type": "Vardag",
                 "from_stop_observed": safe_str(curr.get("last_stop_name", "-")),
                 "to_stop_observed": safe_str(nxt.get("first_stop_name", "-")),
                 "from_lat": float(last_lat) if pd.notna(last_lat) else None,
