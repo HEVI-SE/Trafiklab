@@ -36,22 +36,37 @@ def _build_summary_stats(observed, segments, dates=None, hours=None):
     else:
         unique_pairs = 0
 
-    # Analysed hours
-    n_hours = len(hours) * len(dates) if hours and dates else 0
-
-    # Date range
-    if dates:
+    # Derive date range and day count from actual data
+    if total_obs > 0 and "deadhead_start" in observed.columns:
+        dh_dates = pd.to_datetime(observed["deadhead_start"], errors="coerce").dt.date
+        unique_dates = dh_dates.dropna().unique()
+        n_days = len(unique_dates)
+        start_date = str(min(unique_dates))
+        end_date = str(max(unique_dates))
+        date_range = f"{start_date} &ndash; {end_date}" if start_date != end_date else start_date
+    elif dates:
+        n_days = len(dates)
         start_date = min(dates)
         end_date = max(dates)
         date_range = f"{start_date} &ndash; {end_date}" if start_date != end_date else start_date
     else:
+        n_days = 0
         date_range = "-"
+
+    # Avg duration
+    avg_dur = ""
+    if total_obs > 0:
+        avg = observed["duration_min"].mean()
+        avg_dur = f"{avg:.0f} min"
+    else:
+        avg_dur = "-"
 
     return f"""
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-value">{total_obs:,}</div><div class="stat-label">Observerade tomk&ouml;rningar</div></div>
-      <div class="stat-card"><div class="stat-value">{unique_pairs:,}</div><div class="stat-label">Unika tomk&ouml;rningar</div></div>
-      <div class="stat-card"><div class="stat-value">{n_hours}</div><div class="stat-label">Analyserade timmar</div></div>
+      <div class="stat-card"><div class="stat-value">{unique_pairs:,}</div><div class="stat-label">Unika hållplatspar</div></div>
+      <div class="stat-card"><div class="stat-value">{n_days}</div><div class="stat-label">Analyserade dagar</div></div>
+      <div class="stat-card"><div class="stat-value">{avg_dur}</div><div class="stat-label">Snitt restid</div></div>
       <div class="stat-card accent"><div class="stat-value">{date_range}</div><div class="stat-label">Analysperiod</div></div>
     </div>"""
 
@@ -323,7 +338,7 @@ def _leaflet_js(line_stop_data):
       }});
 
       if (coords.length > 1) {{
-        L.polyline(coords, {{color: '#58a6ff', weight: 3, opacity: 0.7}}).addTo(lineLayer);
+        L.polyline(coords, {{color: '#F1C332', weight: 3, opacity: 0.7}}).addTo(lineLayer);
       }}
 
       lineLayer.addTo(map);
@@ -351,8 +366,6 @@ def generate_html_report(observed, planned, segments, date_str,
     """Generate a complete dark-themed HTML report and return the file path."""
     if output_path is None:
         output_path = os.path.join(DATA_DIR, f"tomkorning_rapport_{date_str}.html")
-
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     summary_html = _build_summary_stats(observed, segments, dates=dates, hours=hours)
 
@@ -404,67 +417,109 @@ def generate_html_report(observed, planned, segments, date_str,
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Rapport &mdash; {date_str}</title>
+<title>SL Bussanalys</title>
 {leaflet_css}
 <style>
   :root {{
-    --bg: #0d1117; --surface: #161b22; --surface2: #1c2129;
-    --border: #30363d; --text: #e6edf3; --text-dim: #8b949e;
-    --accent: #58a6ff; --accent2: #3fb950; --red: #f85149; --orange: #d29922;
-    --radius: 8px;
+    --bg: #0f1118; --surface: #181c25; --surface2: #1e2330;
+    --border: #2a3040; --text: #eaedf2; --text-dim: #8891a4;
+    --accent: #F1C332; --accent-dim: rgba(241,195,50,.12); --accent2: #3fb950;
+    --red: #f85149; --orange: #d29922;
+    --radius: 10px;
   }}
   * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
-    background:var(--bg); color:var(--text); line-height:1.5; padding:2rem; max-width:1400px; margin:0 auto; }}
-  h1 {{ font-size:1.8rem; font-weight:600; margin-bottom:.25rem; }}
-  h2 {{ font-size:1.3rem; font-weight:600; margin:2rem 0 1rem; color:var(--accent); }}
-  .subtitle {{ color:var(--text-dim); font-size:.9rem; margin-bottom:2rem; }}
-  .stats-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1rem; margin-bottom:2rem; }}
-  .stat-card {{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1.25rem; text-align:center; }}
-  .stat-card.accent {{ border-color:var(--accent); background:rgba(88,166,255,.08); }}
-  .stat-value {{ font-size:1.5rem; font-weight:700; }}
+  body {{ font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.6; padding:0; }}
+  .page-wrapper {{ max-width:1400px; margin:0 auto; padding:2.5rem 2rem 1rem; }}
+
+  /* Header */
+  .header {{ margin-bottom:2rem; }}
+  .header h1 {{ font-size:2rem; font-weight:700; letter-spacing:-.02em; }}
+  .header h1 span {{ color:var(--accent); }}
+  .header-line {{ width:60px; height:3px; background:var(--accent); border-radius:2px; margin-top:.5rem; }}
+
+  h2 {{ font-size:1.2rem; font-weight:600; margin:2rem 0 1rem; color:var(--accent); }}
+
+  .subtitle {{ color:var(--text-dim); font-size:.88rem; margin-bottom:1.5rem; }}
+
+  /* Stats */
+  .stats-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.75rem; margin-bottom:2rem; }}
+  .stat-card {{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1.1rem 1rem; text-align:center;
+    transition: border-color .2s, transform .2s; }}
+  .stat-card:hover {{ border-color:var(--accent); transform:translateY(-2px); }}
+  .stat-card.accent {{ border-color:var(--accent); background:var(--accent-dim); }}
+  .stat-value {{ font-size:1.4rem; font-weight:700; }}
   .stat-card.accent .stat-value {{ color:var(--accent); }}
-  .stat-label {{ font-size:.8rem; color:var(--text-dim); margin-top:.25rem; }}
+  .stat-label {{ font-size:.75rem; color:var(--text-dim); margin-top:.2rem; text-transform:uppercase; letter-spacing:.04em; }}
+
+  /* Tables */
   .data-table {{ width:100%; border-collapse:collapse; font-size:.85rem; }}
   .data-table th {{ background:var(--surface2); color:var(--accent); font-weight:600; text-align:left;
-    padding:.5rem .6rem; border-bottom:2px solid var(--border); position:sticky; top:0; white-space:nowrap; }}
-  .data-table td {{ padding:.4rem .6rem; border-bottom:1px solid var(--border); white-space:nowrap; }}
-  .data-table tbody tr:hover {{ background:rgba(88,166,255,.06); }}
+    padding:.55rem .7rem; border-bottom:2px solid var(--border); position:sticky; top:0; white-space:nowrap; }}
+  .data-table td {{ padding:.45rem .7rem; border-bottom:1px solid var(--border); white-space:nowrap; }}
+  .data-table tbody tr:hover {{ background:var(--accent-dim); }}
+
+  /* Tabs */
   .top-tabs {{ display:flex; gap:0; border-bottom:2px solid var(--border); margin-bottom:2rem; }}
-  .top-tab {{ padding:.75rem 1.5rem; cursor:pointer; color:var(--text-dim); font-size:1rem; font-weight:600;
+  .top-tab {{ padding:.75rem 1.5rem; cursor:pointer; color:var(--text-dim); font-size:.95rem; font-weight:600;
     border:none; background:none; border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .15s; }}
   .top-tab:hover {{ color:var(--text); }}
   .top-tab.active {{ color:var(--accent); border-bottom-color:var(--accent); }}
   .tab-panel {{ display:none; }}
   .tab-panel.active {{ display:block; }}
+
+  /* Period tabs / toggle buttons */
   .period-tab {{ background:var(--surface2); border:1px solid var(--border); border-radius:6px;
     padding:.4rem .9rem; cursor:pointer; color:var(--text-dim); font-size:.85rem; transition:all .15s; }}
   .period-tab:hover {{ color:var(--text); border-color:var(--text-dim); }}
   .period-tab.active {{ background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:600; }}
+
   .empty {{ color:var(--text-dim); font-style:italic; padding:1rem 0; }}
+
+  /* Line controls */
   .line-controls {{ display:flex; align-items:center; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; }}
-  .line-controls label {{ font-weight:600; color:var(--text-dim); }}
+  .line-controls label {{ font-weight:600; color:var(--text-dim); font-size:.9rem; }}
   .line-controls select {{ background:var(--surface); color:var(--text); border:1px solid var(--border);
-    border-radius:6px; padding:.5rem 1rem; font-size:.95rem; cursor:pointer; }}
+    border-radius:6px; padding:.5rem 1rem; font-size:.9rem; cursor:pointer; transition:border-color .2s; }}
+  .line-controls select:hover {{ border-color:var(--accent); }}
   .line-info {{ color:var(--text-dim); font-size:.85rem; }}
+
+  /* Delay legend */
   .delay-legend {{ display:flex; gap:1rem; flex-wrap:wrap; margin:.5rem 0 1rem; font-size:.8rem; color:var(--text-dim); }}
   .delay-legend span {{ display:flex; align-items:center; gap:.3rem; }}
   .delay-legend .dot {{ width:12px; height:12px; border-radius:50%; display:inline-block; }}
+
+  /* Scrollbar */
   ::-webkit-scrollbar {{ width:8px; height:8px; }}
   ::-webkit-scrollbar-track {{ background:var(--bg); }}
   ::-webkit-scrollbar-thumb {{ background:var(--border); border-radius:4px; }}
+
+  /* Leaflet popup */
   .leaflet-popup-content-wrapper {{ background:var(--surface)!important; color:var(--text)!important;
     border-radius:var(--radius)!important; border:1px solid var(--border)!important; }}
   .leaflet-popup-content {{ color:var(--text)!important; font-size:.85rem!important; }}
   .leaflet-popup-tip {{ background:var(--surface)!important; }}
-  @media(max-width:768px) {{ body {{ padding:1rem; }} .stats-grid {{ grid-template-columns:repeat(2,1fr); }} }}
+
+  /* Footer */
+  .footer {{ text-align:center; padding:2.5rem 1rem 1.5rem; color:var(--text-dim); font-size:.8rem;
+    border-top:1px solid var(--border); margin-top:3rem; }}
+  .footer a {{ color:var(--accent); text-decoration:none; }}
+  .footer a:hover {{ text-decoration:underline; }}
+
+  @media(max-width:768px) {{
+    .page-wrapper {{ padding:1.25rem 1rem .5rem; }}
+    .stats-grid {{ grid-template-columns:repeat(2,1fr); }}
+  }}
 </style>
 </head>
 <body>
 {leaflet_scripts}
 
-<h1>SL Bussrapport</h1>
-<p class="subtitle">{date_str} &middot; Genererad {now_str}</p>
+<div class="page-wrapper">
+<div class="header">
+  <h1><span>SL</span> Bussanalys</h1>
+  <div class="header-line"></div>
+</div>
 
 <div class="top-tabs">
   {line_tab_btn}
@@ -477,7 +532,7 @@ def generate_html_report(observed, planned, segments, date_str,
 {summary_html}
 
 <h2>Tomk&ouml;rningar per h&aring;llplats</h2>
-<p class="subtitle">V&auml;lj en avg&aring;ngsh&aring;llplats f&ouml;r att se observerade tomk&ouml;rningstider per period. Ber&auml;knad tid &auml;r OSRM-baserad k&ouml;rtid.</p>
+<p class="subtitle">V&auml;lj en avg&aring;ngsh&aring;llplats f&ouml;r att se snittider per trafikperiod. Ber&auml;knad tid baseras p&aring; OSRM-routing.</p>
 
 <div class="line-controls">
   <label for="fromStopSelect">Fr&aring;n h&aring;llplats:</label>
@@ -490,6 +545,11 @@ def generate_html_report(observed, planned, segments, date_str,
 </div>
 <div id="deadheadTable" style="margin-top:1rem;overflow-x:auto;"></div>
 
+</div>
+
+<div class="footer">
+  Kontakt: <a href="mailto:Hevi@gmail.com">Hevi@gmail.com</a>
+</div>
 </div>
 
 <script>
