@@ -1,4 +1,4 @@
-"""HTML report generator — dark theme, Linjer tab (default) + Tomkörningar tab."""
+"""HTML report generator — light theme with golden accent, publication quality."""
 
 import json
 import os
@@ -28,7 +28,6 @@ def _fmt_min(val):
 def _build_summary_stats(observed, segments, dates=None, hours=None):
     total_obs = len(observed) if observed is not None and not observed.empty else 0
 
-    # Unique stop pairs
     if total_obs > 0:
         unique_pairs = observed.drop_duplicates(
             subset=["from_stop_observed", "to_stop_observed"]
@@ -53,22 +52,44 @@ def _build_summary_stats(observed, segments, dates=None, hours=None):
         n_days = 0
         date_range = "-"
 
-    # Avg duration
-    avg_dur = ""
     if total_obs > 0:
-        avg = observed["duration_min"].mean()
-        avg_dur = f"{avg:.0f} min"
+        avg_dur = f"{observed['duration_min'].mean():.0f} min"
     else:
         avg_dur = "-"
 
+    # Operator breakdown
+    op_html = ""
+    if total_obs > 0:
+        op_counts = observed["operator"].value_counts()
+        chips = []
+        for op, cnt in op_counts.items():
+            chips.append(f'<span class="op-chip">{html_escape(str(op))} <b>{cnt}</b></span>')
+        op_html = '<div class="op-row">' + " ".join(chips) + "</div>"
+
     return f"""
     <div class="stats-grid">
-      <div class="stat-card"><div class="stat-value">{total_obs:,}</div><div class="stat-label">Observerade tomk&ouml;rningar</div></div>
-      <div class="stat-card"><div class="stat-value">{unique_pairs:,}</div><div class="stat-label">Unika hållplatspar</div></div>
-      <div class="stat-card"><div class="stat-value">{n_days}</div><div class="stat-label">Analyserade dagar</div></div>
-      <div class="stat-card"><div class="stat-value">{avg_dur}</div><div class="stat-label">Snitt restid</div></div>
-      <div class="stat-card accent"><div class="stat-value">{date_range}</div><div class="stat-label">Analysperiod</div></div>
-    </div>"""
+      <div class="stat-card">
+        <div class="stat-value">{total_obs:,}</div>
+        <div class="stat-label">Observerade tomk&ouml;rningar</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">{unique_pairs:,}</div>
+        <div class="stat-label">Unika h&aring;llplatspar</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">{n_days}</div>
+        <div class="stat-label">Analyserade dagar</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">{avg_dur}</div>
+        <div class="stat-label">Snitt restid</div>
+      </div>
+      <div class="stat-card accent">
+        <div class="stat-value">{date_range}</div>
+        <div class="stat-label">Analysperiod</div>
+      </div>
+    </div>
+    {op_html}"""
 
 
 def _build_deadhead_stop_view(observed):
@@ -94,7 +115,6 @@ def _build_deadhead_stop_view(observed):
     if obs.empty:
         return "<p class='empty'>Inga tomk&ouml;rningar att visa.</p>"
 
-    # Count per from-stop
     from_counts = obs.groupby("from_stop_observed").size().reset_index(name="count")
     from_counts = from_counts.sort_values("count", ascending=False)
 
@@ -104,14 +124,12 @@ def _build_deadhead_stop_view(observed):
         cnt = int(r["count"])
         options_html += f'<option value="{name}">{name} ({cnt})</option>\n'
 
-    # Aggregate: avg duration per (from, to, period, day_type)
     agg = (
         obs.groupby(["from_stop_observed", "to_stop_observed", "period", "day_type"])
         .agg(avg_min=("duration_min", "mean"), count=("duration_min", "size"))
         .reset_index()
     )
 
-    # OSRM average per (from, to) — same regardless of period/day_type
     osrm_agg = {}
     if "beräknad_körtid_min" in obs.columns:
         osrm_tmp = (
@@ -122,7 +140,6 @@ def _build_deadhead_stop_view(observed):
         for (f, t), v in osrm_tmp.items():
             osrm_agg[(f, t)] = round(v, 1)
 
-    # Build JS data: {from_stop: [{to, vardag: {FM-topp: X, ...}, helg: {...}, osrm: X}, ...]}
     js_data = {}
     for from_stop, grp in agg.groupby("from_stop_observed"):
         to_stops = {}
@@ -150,17 +167,15 @@ def _deadhead_js(js_data):
     data_json = json.dumps(js_data, ensure_ascii=False)
     periods = _period_order()
 
-    # Build header columns
     header_cols = ""
     for p in periods:
         header_cols += f"'<th>{p}</th>' + "
     header_cols += "'<th>Ber&auml;knad tid</th>' + "
 
-    # Build row cells — reads from the day_type sub-object
     row_cells = ""
     for p in periods:
         row_cells += f"'<td>' + fmt(dayObj['{p}']) + '</td>' + "
-    row_cells += "'<td style=\"color:var(--text-dim)\">' + fmt(d.osrm) + '</td>' + "
+    row_cells += "'<td class=\"dim\">' + fmt(d.osrm) + '</td>' + "
 
     return f"""
     var deadData = {data_json};
@@ -168,8 +183,8 @@ def _deadhead_js(js_data):
 
     function switchDayType(dt) {{
       currentDayType = dt;
-      document.getElementById('dayVardag').className = 'period-tab' + (dt === 'vardag' ? ' active' : '');
-      document.getElementById('dayHelg').className = 'period-tab' + (dt === 'helg' ? ' active' : '');
+      document.getElementById('dayVardag').className = 'pill' + (dt === 'vardag' ? ' active' : '');
+      document.getElementById('dayHelg').className = 'pill' + (dt === 'helg' ? ' active' : '');
       var sel = document.getElementById('fromStopSelect');
       if (sel.value) showFromStop(sel.value);
     }}
@@ -185,12 +200,12 @@ def _deadhead_js(js_data):
         '<tr><th>Till h&aring;llplats</th>' + {header_cols} '</tr>' +
         '</thead><tbody>';
       function fmt(v) {{
-        if (v === null || v === undefined) return '-';
+        if (v === null || v === undefined) return '<span class="dim">&ndash;</span>';
         return Math.round(v) + ' min';
       }}
       rows.forEach(function(d) {{
         var dayObj = d[currentDayType] || {{}};
-        html += '<tr><td style="font-weight:600">' + d.to + '</td>' + {row_cells} '</tr>';
+        html += '<tr><td class="bold">' + d.to + '</td>' + {row_cells} '</tr>';
       }});
       html += '</tbody></table>';
       el.innerHTML = html;
@@ -207,7 +222,6 @@ def _build_line_tab(line_stop_data):
     if not line_stop_data:
         return "<p class='empty'>Ingen linjedata tillg&auml;nglig.</p>"
 
-    # Group lines: line_name -> list of direction keys
     line_dirs = {}
     for key, info in line_stop_data.items():
         name = info["name"]
@@ -221,19 +235,19 @@ def _build_line_tab(line_stop_data):
         options_html += f'<option value="{html_escape(name)}">{html_escape(name)}</option>\n'
 
     return f"""
-    <div class="line-controls">
-      <label for="lineSelect">V&auml;lj linje:</label>
+    <div class="controls-bar">
+      <label for="lineSelect">V&auml;lj linje</label>
       <select id="lineSelect" onchange="showLine(this.value)">
         <option value="">-- V&auml;lj --</option>
         {options_html}
       </select>
-      <div id="dirBtns" style="display:none;margin-left:1rem">
-        <button class="period-tab active" id="dirABtn" onclick="switchDir('A')">Riktning A</button>
-        <button class="period-tab" id="dirBBtn" onclick="switchDir('B')">Riktning B</button>
+      <div id="dirBtns" style="display:none">
+        <button class="pill active" id="dirABtn" onclick="switchDir('A')">Riktning A</button>
+        <button class="pill" id="dirBBtn" onclick="switchDir('B')">Riktning B</button>
       </div>
-      <span id="lineInfo" class="line-info"></span>
+      <span id="lineInfo" class="meta"></span>
     </div>
-    <div id="lineMap" style="height:500px;border-radius:8px;border:1px solid var(--border);margin:1rem 0;"></div>
+    <div id="lineMap"></div>
     <div id="lineStopTable"></div>
     """
 
@@ -252,19 +266,19 @@ def _leaflet_js(line_stop_data):
     function initMap() {{
       if (map) return;
       map = L.map('lineMap').setView([59.33, 18.07], 11);
-      L.tileLayer('https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
+      L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
         attribution: '&copy; OpenStreetMap &copy; CARTO',
         maxZoom: 18,
       }}).addTo(map);
     }}
 
     function delayColor(d) {{
-      if (d === null || d === undefined) return '#8b949e';
-      if (d <= 30) return '#3fb950';
-      if (d <= 60) return '#58a6ff';
-      if (d <= 120) return '#d29922';
-      if (d <= 300) return '#f0883e';
-      return '#f85149';
+      if (d === null || d === undefined) return '#b0b8c4';
+      if (d <= 30) return '#16a34a';
+      if (d <= 60) return '#2563eb';
+      if (d <= 120) return '#d97706';
+      if (d <= 300) return '#ea580c';
+      return '#dc2626';
     }}
 
     function delayLabel(d) {{
@@ -276,8 +290,8 @@ def _leaflet_js(line_stop_data):
 
     function switchDir(dir) {{
       currentDir = dir;
-      document.getElementById('dirABtn').className = 'period-tab' + (dir === 'A' ? ' active' : '');
-      document.getElementById('dirBBtn').className = 'period-tab' + (dir === 'B' ? ' active' : '');
+      document.getElementById('dirABtn').className = 'pill' + (dir === 'A' ? ' active' : '');
+      document.getElementById('dirBBtn').className = 'pill' + (dir === 'B' ? ' active' : '');
       renderLine();
     }}
 
@@ -285,10 +299,9 @@ def _leaflet_js(line_stop_data):
       initMap();
       currentLine = name;
       currentDir = 'A';
-      document.getElementById('dirABtn').className = 'period-tab active';
-      document.getElementById('dirBBtn').className = 'period-tab';
+      document.getElementById('dirABtn').className = 'pill active';
+      document.getElementById('dirBBtn').className = 'pill';
 
-      // Check if line has two directions
       var keys = Object.keys(lineData).filter(function(k) {{ return lineData[k].name === name; }});
       document.getElementById('dirBtns').style.display = keys.length > 1 ? 'flex' : 'none';
 
@@ -306,7 +319,6 @@ def _leaflet_js(line_stop_data):
       var key = Object.keys(lineData).filter(function(k) {{
         return lineData[k].name === currentLine && lineData[k].direction === wantDir;
       }})[0];
-      // Fallback to first available direction
       if (!key) {{
         key = Object.keys(lineData).filter(function(k) {{
           return lineData[k].name === currentLine;
@@ -324,12 +336,11 @@ def _leaflet_js(line_stop_data):
         coords.push([s.lat, s.lon]);
         var color = delayColor(s.avg_delay);
         L.circleMarker([s.lat, s.lon], {{
-          radius: 7, fillColor: color, color: '#0d1117', weight: 2, fillOpacity: 0.9,
+          radius: 7, fillColor: color, color: '#fff', weight: 2, fillOpacity: 0.9,
         }}).bindPopup(
           '<b>' + s.stop_name + '</b><br>' +
-          'H' + String.fromCharCode(229) + 'llplats ' + s.seq + '<br>' +
-          'F' + String.fromCharCode(246) + 'rsening: ' + delayLabel(s.avg_delay) +
-          ''
+          'H\\u00e5llplats ' + s.seq + '<br>' +
+          'F\\u00f6rsening: ' + delayLabel(s.avg_delay)
         ).addTo(lineLayer);
 
         tableRows += '<tr><td>' + s.seq + '</td>' +
@@ -338,7 +349,7 @@ def _leaflet_js(line_stop_data):
       }});
 
       if (coords.length > 1) {{
-        L.polyline(coords, {{color: '#F1C332', weight: 3, opacity: 0.7}}).addTo(lineLayer);
+        L.polyline(coords, {{color: '#D4A017', weight: 3, opacity: 0.6}}).addTo(lineLayer);
       }}
 
       lineLayer.addTo(map);
@@ -346,11 +357,11 @@ def _leaflet_js(line_stop_data):
         map.fitBounds(lineLayer.getBounds(), {{padding: [30, 30]}});
       }}
 
-      document.getElementById('lineInfo').textContent = stops.length + ' h' + String.fromCharCode(229) + 'llplatser';
+      document.getElementById('lineInfo').textContent = stops.length + ' h\\u00e5llplatser';
       document.getElementById('lineStopTable').innerHTML =
-        '<table class="data-table" style="margin-top:1rem"><thead><tr>' +
-        '<th>#</th><th>H' + String.fromCharCode(229) + 'llplats</th>' +
-        '<th>Snittf' + String.fromCharCode(246) + 'rsening</th>' +
+        '<table class="data-table" style="margin-top:1.5rem"><thead><tr>' +
+        '<th>#</th><th>H\\u00e5llplats</th>' +
+        '<th>Snittf\\u00f6rsening</th>' +
         '</tr></thead><tbody>' + tableRows + '</tbody></table>';
     }}
     """
@@ -363,13 +374,12 @@ def _leaflet_js(line_stop_data):
 def generate_html_report(observed, planned, segments, date_str,
                          line_stop_data=None, output_path=None,
                          dates=None, hours=None):
-    """Generate a complete dark-themed HTML report and return the file path."""
+    """Generate a publication-quality light-themed HTML report."""
     if output_path is None:
         output_path = os.path.join(DATA_DIR, f"tomkorning_rapport_{date_str}.html")
 
     summary_html = _build_summary_stats(observed, segments, dates=dates, hours=hours)
 
-    # Deadhead stop view
     dh_result = _build_deadhead_stop_view(observed)
     if isinstance(dh_result, str):
         stop_options_html = ""
@@ -391,24 +401,22 @@ def generate_html_report(observed, planned, segments, date_str,
     line_tab_btn = ""
     line_panel_html = ""
     if has_line_tab:
-        # Linjer is the default (active) tab
         line_tab_btn = '<button class="top-tab active" onclick="switchTopTab(this, \'linePanel\')">Linjer</button>'
         line_panel_html = (
             '<div id="linePanel" class="tab-panel active">'
             '<h2>Linjevy med f&ouml;rsening per h&aring;llplats</h2>'
-            '<div class="delay-legend">'
-            '<span><span class="dot" style="background:#3fb950"></span> &le;30s</span>'
-            '<span><span class="dot" style="background:#58a6ff"></span> 31-60s</span>'
-            '<span><span class="dot" style="background:#d29922"></span> 1-2 min</span>'
-            '<span><span class="dot" style="background:#f0883e"></span> 2-5 min</span>'
-            '<span><span class="dot" style="background:#f85149"></span> &gt;5 min</span>'
-            '<span><span class="dot" style="background:#8b949e"></span> Ingen data</span>'
+            '<div class="legend">'
+            '<span><span class="dot" style="background:#16a34a"></span> &le;30s</span>'
+            '<span><span class="dot" style="background:#2563eb"></span> 31&ndash;60s</span>'
+            '<span><span class="dot" style="background:#d97706"></span> 1&ndash;2 min</span>'
+            '<span><span class="dot" style="background:#ea580c"></span> 2&ndash;5 min</span>'
+            '<span><span class="dot" style="background:#dc2626"></span> &gt;5 min</span>'
+            '<span><span class="dot" style="background:#b0b8c4"></span> Ingen data</span>'
             '</div>'
             + line_tab_html +
             '</div>'
         )
 
-    # Deadhead tab is secondary when line tab exists
     dh_active = "" if has_line_tab else " active"
     dh_tab_active = "" if has_line_tab else " active"
 
@@ -418,108 +426,243 @@ def generate_html_report(observed, planned, segments, date_str,
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SL Bussanalys</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 {leaflet_css}
 <style>
   :root {{
-    --bg: #0f1118; --surface: #181c25; --surface2: #1e2330;
-    --border: #2a3040; --text: #eaedf2; --text-dim: #8891a4;
-    --accent: #F1C332; --accent-dim: rgba(241,195,50,.12); --accent2: #3fb950;
-    --red: #f85149; --orange: #d29922;
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --surface2: #f5f5f0;
+    --border: #e5e5e0;
+    --border-strong: #d0d0cb;
+    --text: #1a1a1a;
+    --text-dim: #6b7280;
+    --accent: #F1C332;
+    --accent-dark: #D4A017;
+    --accent-bg: #fdf8e8;
+    --accent-border: #f0d97a;
+    --green: #16a34a;
+    --red: #dc2626;
+    --orange: #d97706;
     --radius: 10px;
   }}
   * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
-    background:var(--bg); color:var(--text); line-height:1.6; padding:0; }}
-  .page-wrapper {{ max-width:1400px; margin:0 auto; padding:2.5rem 2rem 1rem; }}
 
-  /* Header */
-  .header {{ margin-bottom:2rem; }}
-  .header h1 {{ font-size:2rem; font-weight:700; letter-spacing:-.02em; }}
-  .header h1 span {{ color:var(--accent); }}
-  .header-line {{ width:60px; height:3px; background:var(--accent); border-radius:2px; margin-top:.5rem; }}
+  body {{
+    font-family:'Inter',system-ui,-apple-system,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.6;
+  }}
 
-  h2 {{ font-size:1.2rem; font-weight:600; margin:2rem 0 1rem; color:var(--accent); }}
+  /* ---- Top bar ---- */
+  .topbar {{
+    background:var(--surface);
+    border-bottom:1px solid var(--border);
+    padding:0 2rem;
+  }}
+  .topbar-inner {{
+    max-width:1320px; margin:0 auto;
+    display:flex; align-items:center; justify-content:space-between;
+    height:56px;
+  }}
+  .brand {{
+    font-weight:700; font-size:1.15rem; letter-spacing:-.02em;
+    display:flex; align-items:center; gap:.5rem;
+  }}
+  .brand-mark {{
+    background:var(--accent); color:#1a1a1a;
+    font-weight:700; font-size:.75rem; padding:3px 8px;
+    border-radius:4px; letter-spacing:.06em;
+  }}
+  .brand-sub {{ color:var(--text-dim); font-weight:400; font-size:.85rem; }}
 
-  .subtitle {{ color:var(--text-dim); font-size:.88rem; margin-bottom:1.5rem; }}
+  /* ---- Page ---- */
+  .page {{ max-width:1320px; margin:0 auto; padding:2rem 2rem 1rem; }}
 
-  /* Stats */
-  .stats-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.75rem; margin-bottom:2rem; }}
-  .stat-card {{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1.1rem 1rem; text-align:center;
-    transition: border-color .2s, transform .2s; }}
-  .stat-card:hover {{ border-color:var(--accent); transform:translateY(-2px); }}
-  .stat-card.accent {{ border-color:var(--accent); background:var(--accent-dim); }}
-  .stat-value {{ font-size:1.4rem; font-weight:700; }}
-  .stat-card.accent .stat-value {{ color:var(--accent); }}
-  .stat-label {{ font-size:.75rem; color:var(--text-dim); margin-top:.2rem; text-transform:uppercase; letter-spacing:.04em; }}
-
-  /* Tables */
-  .data-table {{ width:100%; border-collapse:collapse; font-size:.85rem; }}
-  .data-table th {{ background:var(--surface2); color:var(--accent); font-weight:600; text-align:left;
-    padding:.55rem .7rem; border-bottom:2px solid var(--border); position:sticky; top:0; white-space:nowrap; }}
-  .data-table td {{ padding:.45rem .7rem; border-bottom:1px solid var(--border); white-space:nowrap; }}
-  .data-table tbody tr:hover {{ background:var(--accent-dim); }}
-
-  /* Tabs */
-  .top-tabs {{ display:flex; gap:0; border-bottom:2px solid var(--border); margin-bottom:2rem; }}
-  .top-tab {{ padding:.75rem 1.5rem; cursor:pointer; color:var(--text-dim); font-size:.95rem; font-weight:600;
-    border:none; background:none; border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .15s; }}
+  /* ---- Tabs ---- */
+  .top-tabs {{
+    display:flex; gap:0;
+    border-bottom:2px solid var(--border);
+    margin-bottom:2rem;
+  }}
+  .top-tab {{
+    padding:.7rem 1.5rem; cursor:pointer;
+    color:var(--text-dim); font-size:.9rem; font-weight:600;
+    border:none; background:none;
+    border-bottom:2px solid transparent; margin-bottom:-2px;
+    transition:all .15s;
+  }}
   .top-tab:hover {{ color:var(--text); }}
-  .top-tab.active {{ color:var(--accent); border-bottom-color:var(--accent); }}
+  .top-tab.active {{ color:var(--accent-dark); border-bottom-color:var(--accent); }}
   .tab-panel {{ display:none; }}
   .tab-panel.active {{ display:block; }}
 
-  /* Period tabs / toggle buttons */
-  .period-tab {{ background:var(--surface2); border:1px solid var(--border); border-radius:6px;
-    padding:.4rem .9rem; cursor:pointer; color:var(--text-dim); font-size:.85rem; transition:all .15s; }}
-  .period-tab:hover {{ color:var(--text); border-color:var(--text-dim); }}
-  .period-tab.active {{ background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:600; }}
+  /* ---- Section headings ---- */
+  h2 {{
+    font-size:1.1rem; font-weight:700; margin:2rem 0 .75rem;
+    color:var(--text);
+    display:flex; align-items:center; gap:.5rem;
+  }}
+  h2::before {{
+    content:''; display:inline-block;
+    width:4px; height:18px; border-radius:2px;
+    background:var(--accent);
+  }}
+  .subtitle {{
+    color:var(--text-dim); font-size:.84rem; margin-bottom:1.5rem;
+    line-height:1.5;
+  }}
+
+  /* ---- Stats grid ---- */
+  .stats-grid {{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(155px,1fr));
+    gap:.75rem; margin-bottom:1rem;
+  }}
+  .stat-card {{
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius); padding:1.15rem 1rem;
+    text-align:center; transition:box-shadow .2s, transform .2s;
+  }}
+  .stat-card:hover {{
+    box-shadow:0 4px 16px rgba(0,0,0,.06);
+    transform:translateY(-2px);
+  }}
+  .stat-card.accent {{
+    border-color:var(--accent-border);
+    background:var(--accent-bg);
+  }}
+  .stat-value {{ font-size:1.5rem; font-weight:700; color:var(--text); }}
+  .stat-card.accent .stat-value {{ color:var(--accent-dark); }}
+  .stat-label {{
+    font-size:.7rem; color:var(--text-dim);
+    margin-top:.15rem; text-transform:uppercase;
+    letter-spacing:.05em; font-weight:500;
+  }}
+
+  /* Operator chips */
+  .op-row {{
+    display:flex; flex-wrap:wrap; gap:.4rem;
+    margin-bottom:1.5rem;
+  }}
+  .op-chip {{
+    display:inline-flex; align-items:center; gap:.35rem;
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:20px; padding:.3rem .75rem;
+    font-size:.75rem; color:var(--text-dim);
+  }}
+  .op-chip b {{ color:var(--text); font-weight:600; }}
+
+  /* ---- Tables ---- */
+  .data-table {{ width:100%; border-collapse:collapse; font-size:.84rem; }}
+  .data-table th {{
+    background:var(--surface2); color:var(--text-dim);
+    font-weight:600; text-align:left; font-size:.75rem;
+    text-transform:uppercase; letter-spacing:.04em;
+    padding:.6rem .75rem; border-bottom:2px solid var(--border);
+    position:sticky; top:0; white-space:nowrap;
+  }}
+  .data-table td {{
+    padding:.5rem .75rem; border-bottom:1px solid var(--border);
+    white-space:nowrap;
+  }}
+  .data-table tbody tr:hover {{ background:var(--accent-bg); }}
+  .data-table .bold {{ font-weight:600; }}
+  .data-table .dim {{ color:var(--text-dim); }}
+
+  /* ---- Pills / toggle buttons ---- */
+  .pill {{
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:20px; padding:.35rem .85rem;
+    cursor:pointer; color:var(--text-dim); font-size:.82rem;
+    font-weight:500; transition:all .15s;
+  }}
+  .pill:hover {{ border-color:var(--accent); color:var(--text); }}
+  .pill.active {{
+    background:var(--accent); color:#1a1a1a;
+    border-color:var(--accent); font-weight:600;
+  }}
+
+  /* ---- Controls bar ---- */
+  .controls-bar {{
+    display:flex; align-items:center; gap:.75rem;
+    flex-wrap:wrap; margin-bottom:1rem;
+  }}
+  .controls-bar label {{
+    font-weight:600; color:var(--text-dim); font-size:.85rem;
+  }}
+  .controls-bar select {{
+    background:var(--surface); color:var(--text);
+    border:1px solid var(--border); border-radius:8px;
+    padding:.45rem .9rem; font-size:.88rem;
+    cursor:pointer; transition:border-color .2s;
+    font-family:inherit;
+  }}
+  .controls-bar select:hover {{ border-color:var(--accent); }}
+  .controls-bar select:focus {{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-bg); }}
+  .meta {{ color:var(--text-dim); font-size:.82rem; }}
+
+  /* ---- Legend ---- */
+  .legend {{
+    display:flex; gap:.85rem; flex-wrap:wrap;
+    margin:.5rem 0 1.25rem; font-size:.78rem; color:var(--text-dim);
+  }}
+  .legend span {{ display:flex; align-items:center; gap:.3rem; }}
+  .legend .dot {{
+    width:11px; height:11px; border-radius:50%;
+    display:inline-block; border:1px solid rgba(0,0,0,.1);
+  }}
+
+  /* ---- Map ---- */
+  #lineMap {{
+    height:500px; border-radius:var(--radius);
+    border:1px solid var(--border); margin:1rem 0;
+    box-shadow:0 2px 8px rgba(0,0,0,.04);
+  }}
+
+  /* Leaflet popup override */
+  .leaflet-popup-content-wrapper {{
+    background:var(--surface)!important; color:var(--text)!important;
+    border-radius:8px!important; box-shadow:0 4px 16px rgba(0,0,0,.12)!important;
+    border:1px solid var(--border)!important;
+  }}
+  .leaflet-popup-content {{ color:var(--text)!important; font-size:.84rem!important; font-family:'Inter',sans-serif!important; }}
+  .leaflet-popup-tip {{ background:var(--surface)!important; }}
 
   .empty {{ color:var(--text-dim); font-style:italic; padding:1rem 0; }}
 
-  /* Line controls */
-  .line-controls {{ display:flex; align-items:center; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; }}
-  .line-controls label {{ font-weight:600; color:var(--text-dim); font-size:.9rem; }}
-  .line-controls select {{ background:var(--surface); color:var(--text); border:1px solid var(--border);
-    border-radius:6px; padding:.5rem 1rem; font-size:.9rem; cursor:pointer; transition:border-color .2s; }}
-  .line-controls select:hover {{ border-color:var(--accent); }}
-  .line-info {{ color:var(--text-dim); font-size:.85rem; }}
-
-  /* Delay legend */
-  .delay-legend {{ display:flex; gap:1rem; flex-wrap:wrap; margin:.5rem 0 1rem; font-size:.8rem; color:var(--text-dim); }}
-  .delay-legend span {{ display:flex; align-items:center; gap:.3rem; }}
-  .delay-legend .dot {{ width:12px; height:12px; border-radius:50%; display:inline-block; }}
-
-  /* Scrollbar */
-  ::-webkit-scrollbar {{ width:8px; height:8px; }}
-  ::-webkit-scrollbar-track {{ background:var(--bg); }}
-  ::-webkit-scrollbar-thumb {{ background:var(--border); border-radius:4px; }}
-
-  /* Leaflet popup */
-  .leaflet-popup-content-wrapper {{ background:var(--surface)!important; color:var(--text)!important;
-    border-radius:var(--radius)!important; border:1px solid var(--border)!important; }}
-  .leaflet-popup-content {{ color:var(--text)!important; font-size:.85rem!important; }}
-  .leaflet-popup-tip {{ background:var(--surface)!important; }}
-
-  /* Footer */
-  .footer {{ text-align:center; padding:2.5rem 1rem 1.5rem; color:var(--text-dim); font-size:.8rem;
-    border-top:1px solid var(--border); margin-top:3rem; }}
-  .footer a {{ color:var(--accent); text-decoration:none; }}
+  /* ---- Footer ---- */
+  .footer {{
+    text-align:center; padding:2rem 1rem 1.5rem;
+    color:var(--text-dim); font-size:.78rem;
+    border-top:1px solid var(--border); margin-top:3rem;
+  }}
+  .footer a {{ color:var(--accent-dark); text-decoration:none; font-weight:500; }}
   .footer a:hover {{ text-decoration:underline; }}
 
+  /* ---- Responsive ---- */
   @media(max-width:768px) {{
-    .page-wrapper {{ padding:1.25rem 1rem .5rem; }}
+    .topbar {{ padding:0 1rem; }}
+    .page {{ padding:1.25rem 1rem .5rem; }}
     .stats-grid {{ grid-template-columns:repeat(2,1fr); }}
+    #lineMap {{ height:350px; }}
   }}
 </style>
 </head>
 <body>
 {leaflet_scripts}
 
-<div class="page-wrapper">
-<div class="header">
-  <h1><span>SL</span> Bussanalys</h1>
-  <div class="header-line"></div>
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark">SL</span>
+      Bussanalys
+    </div>
+    <span class="brand-sub">Tomk&ouml;rningar &amp; f&ouml;rseningar</span>
+  </div>
 </div>
+
+<div class="page">
 
 <div class="top-tabs">
   {line_tab_btn}
@@ -532,16 +675,16 @@ def generate_html_report(observed, planned, segments, date_str,
 {summary_html}
 
 <h2>Tomk&ouml;rningar per h&aring;llplats</h2>
-<p class="subtitle">V&auml;lj en avg&aring;ngsh&aring;llplats f&ouml;r att se snittider per trafikperiod. Ber&auml;knad tid baseras p&aring; OSRM-routing.</p>
+<p class="subtitle">V&auml;lj en avg&aring;ngsh&aring;llplats f&ouml;r att se genomsnittliga tomk&ouml;rningstider uppdelat per trafikperiod. Kolumnen <em>Ber&auml;knad tid</em> visar OSRM-baserad k&ouml;rtid som referensv&auml;rde.</p>
 
-<div class="line-controls">
-  <label for="fromStopSelect">Fr&aring;n h&aring;llplats:</label>
+<div class="controls-bar">
+  <label for="fromStopSelect">Fr&aring;n h&aring;llplats</label>
   <select id="fromStopSelect" onchange="showFromStop(this.value)">
     <option value="">-- V&auml;lj --</option>
     {stop_options_html}
   </select>
-  <button class="period-tab active" id="dayVardag" onclick="switchDayType('vardag')">Vardag</button>
-  <button class="period-tab" id="dayHelg" onclick="switchDayType('helg')">Helg</button>
+  <button class="pill active" id="dayVardag" onclick="switchDayType('vardag')">Vardag</button>
+  <button class="pill" id="dayHelg" onclick="switchDayType('helg')">Helg</button>
 </div>
 <div id="deadheadTable" style="margin-top:1rem;overflow-x:auto;"></div>
 
@@ -550,6 +693,7 @@ def generate_html_report(observed, planned, segments, date_str,
 <div class="footer">
   Kontakt: <a href="mailto:Hevi@gmail.com">Hevi@gmail.com</a>
 </div>
+
 </div>
 
 <script>
@@ -571,7 +715,6 @@ PLACEHOLDER_LINE_JS
 </body>
 </html>"""
 
-    # Insert JS blocks (can't be in f-string due to backslash/quote issues)
     html = html.replace("PLACEHOLDER_DEADHEAD_JS", deadhead_table_js)
     html = html.replace("PLACEHOLDER_LINE_JS", line_js if has_line_tab else "")
 
