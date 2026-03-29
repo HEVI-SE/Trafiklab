@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
@@ -314,48 +315,69 @@ def _parse_pb_files(folder_path, trip_lookup, active_states, finished_segments):
     return obs_count
 
 
-def fetch_vehicle_positions(date_str, hours, trip_lookup, force_download=False):
+def _download_and_extract_hour(date_str, hour, force_download=False):
+    """Download and extract a single hour's vehicle position data. Thread-safe."""
+    hour_str = f"{hour:02d}"
+    hour_7z = os.path.join(DATA_DIR, f"vp_{OPERATOR}_{date_str}_{hour_str}.7z")
+    hour_dir = os.path.join(DATA_DIR, f"vp_{OPERATOR}_{date_str}_{hour_str}")
+    url = (
+        f"https://api.koda.trafiklab.se/KoDa/api/v2/gtfs-rt/"
+        f"{OPERATOR}/VehiclePositions?date={date_str}&hour={hour_str}&key={API_KEY_KODA}"
+    )
+
+    try:
+        fetch_with_retry(url, hour_7z, max_wait_minutes=25, sleep_seconds=30, force_download=force_download)
+    except Exception as e:
+        print(f"    Hoppar över timme {hour_str}: {e}")
+        return hour, None
+
+    os.makedirs(hour_dir, exist_ok=True)
+    try:
+        if force_download or not folder_has_pb_files(hour_dir):
+            with py7zr.SevenZipFile(hour_7z, mode="r") as z:
+                z.extractall(hour_dir)
+    except Exception as e:
+        print(f"    Kunde inte extrahera timme {hour_str}: {e}")
+        return hour, None
+
+    return hour, hour_dir
+
+
+def fetch_vehicle_positions(date_str, hours, trip_lookup, force_download=False, max_workers=6):
     """Fetch and parse vehicle positions for a single date and list of hours.
 
+    Downloads all hours in parallel (max_workers threads), then parses sequentially.
     Returns a DataFrame of segments (one row per continuous trip/state per vehicle).
     """
     active_states = {}
     finished_segments = []
     total_obs = 0
 
-    for hour in hours:
-        print(f"  Timme {hour:02d}...")
-        hour_str = f"{hour:02d}"
-        hour_7z = os.path.join(DATA_DIR, f"vp_{OPERATOR}_{date_str}_{hour_str}.7z")
-        hour_dir = os.path.join(DATA_DIR, f"vp_{OPERATOR}_{date_str}_{hour_str}")
-        url = (
-            f"https://api.koda.trafiklab.se/KoDa/api/v2/gtfs-rt/"
-            f"{OPERATOR}/VehiclePositions?date={date_str}&hour={hour_str}&key={API_KEY_KODA}"
-        )
+    # Phase 1: Download & extract all hours in parallel
+    print(f"  Laddar ner {len(hours)} timmar parallellt (max {max_workers} trådar)...")
+    hour_dirs = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_download_and_extract_hour, date_str, hour, force_download): hour
+            for hour in hours
+        }
+        for future in as_completed(futures):
+            hour, hour_dir = future.result()
+            if hour_dir is not None:
+                hour_dirs[hour] = hour_dir
+                print(f"    Timme {hour:02d} klar")
 
-        try:
-            fetch_with_retry(url, hour_7z, max_wait_minutes=20, sleep_seconds=30, force_download=force_download)
-        except Exception as e:
-            print(f"    Hoppar över timme {hour_str}: {e}")
-            continue
+    print(f"  Nedladdning klar: {len(hour_dirs)}/{len(hours)} timmar")
 
-        os.makedirs(hour_dir, exist_ok=True)
-        try:
-            if force_download or not folder_has_pb_files(hour_dir):
-                print(f"    Extraherar...")
-                with py7zr.SevenZipFile(hour_7z, mode="r") as z:
-                    z.extractall(hour_dir)
-        except Exception as e:
-            print(f"    Kunde inte extrahera timme {hour_str}: {e}")
-            continue
-
+    # Phase 2: Parse in chronological order (must be sequential for segment state tracking)
+    for hour in sorted(hour_dirs.keys()):
+        hour_dir = hour_dirs[hour]
         try:
             obs_count = _parse_pb_files(hour_dir, trip_lookup, active_states, finished_segments)
             total_obs += obs_count
-            print(f"    Observationer: {obs_count:,}  Segment: {len(finished_segments):,}")
+            print(f"    Timme {hour:02d} parsed: {obs_count:,} obs, {len(finished_segments):,} segment")
         except Exception as e:
-            print(f"    Fel vid parsing timme {hour_str}: {e}")
-
+            print(f"    Fel vid parsing timme {hour:02d}: {e}")
         gc.collect()
 
     # Flush remaining active states
@@ -424,37 +446,61 @@ def filter_bus_segments(seg_df, bus_route_types=None):
     return filtered.reset_index(drop=True)
 
 
-def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False):
+def _download_and_extract_tu_hour(date_str, hour, force_download=False):
+    """Download and extract a single hour's TripUpdates data. Thread-safe."""
+    hour_str = f"{hour:02d}"
+    hour_7z = os.path.join(DATA_DIR, f"tu_{OPERATOR}_{date_str}_{hour_str}.7z")
+    hour_dir = os.path.join(DATA_DIR, f"tu_{OPERATOR}_{date_str}_{hour_str}")
+    url = (
+        f"https://api.koda.trafiklab.se/KoDa/api/v2/gtfs-rt/"
+        f"{OPERATOR}/TripUpdates?date={date_str}&hour={hour_str}&key={API_KEY_KODA}"
+    )
+
+    try:
+        fetch_with_retry(url, hour_7z, max_wait_minutes=25, sleep_seconds=30, force_download=force_download)
+    except Exception as e:
+        print(f"    Hoppar över TripUpdates timme {hour_str}: {e}")
+        return hour, None
+
+    os.makedirs(hour_dir, exist_ok=True)
+    try:
+        if force_download or not folder_has_pb_files(hour_dir):
+            with py7zr.SevenZipFile(hour_7z, mode="r") as z:
+                z.extractall(hour_dir)
+    except Exception as e:
+        print(f"    Kunde inte extrahera TripUpdates timme {hour_str}: {e}")
+        return hour, None
+
+    return hour, hour_dir
+
+
+def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False, max_workers=6):
     """Fetch GTFS-RT TripUpdates and extract per-stop delay data.
 
+    Downloads all hours in parallel, then parses sequentially.
     Returns a DataFrame with columns: route_short_name, direction_id, stop_id, delay_seconds.
     """
     records = []
 
-    for hour in hours:
-        hour_str = f"{hour:02d}"
-        hour_7z = os.path.join(DATA_DIR, f"tu_{OPERATOR}_{date_str}_{hour_str}.7z")
-        hour_dir = os.path.join(DATA_DIR, f"tu_{OPERATOR}_{date_str}_{hour_str}")
-        url = (
-            f"https://api.koda.trafiklab.se/KoDa/api/v2/gtfs-rt/"
-            f"{OPERATOR}/TripUpdates?date={date_str}&hour={hour_str}&key={API_KEY_KODA}"
-        )
+    # Phase 1: Download & extract all hours in parallel
+    print(f"  Laddar ner TripUpdates {len(hours)} timmar parallellt...")
+    hour_dirs = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_download_and_extract_tu_hour, date_str, hour, force_download): hour
+            for hour in hours
+        }
+        for future in as_completed(futures):
+            hour, hour_dir = future.result()
+            if hour_dir is not None:
+                hour_dirs[hour] = hour_dir
+                print(f"    TU timme {hour:02d} nedladdad")
 
-        try:
-            fetch_with_retry(url, hour_7z, max_wait_minutes=20, sleep_seconds=30, force_download=force_download)
-        except Exception as e:
-            print(f"    Hoppar över TripUpdates timme {hour_str}: {e}")
-            continue
+    print(f"  TripUpdates nedladdning klar: {len(hour_dirs)}/{len(hours)} timmar")
 
-        os.makedirs(hour_dir, exist_ok=True)
-        try:
-            if force_download or not folder_has_pb_files(hour_dir):
-                print(f"    Extraherar TripUpdates timme {hour_str}...")
-                with py7zr.SevenZipFile(hour_7z, mode="r") as z:
-                    z.extractall(hour_dir)
-        except Exception as e:
-            print(f"    Kunde inte extrahera TripUpdates timme {hour_str}: {e}")
-            continue
+    # Phase 2: Parse in chronological order
+    for hour in sorted(hour_dirs.keys()):
+        hour_dir = hour_dirs[hour]
 
         pb_files = []
         for root, _, files_ in os.walk(hour_dir):
@@ -513,7 +559,7 @@ def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False):
                             "delay_seconds": delay,
                         })
 
-        print(f"    TripUpdates timme {hour_str}: {len(seen_trips)} turer, {len(records)} delay-poster totalt")
+        print(f"    TripUpdates timme {hour:02d}: {len(seen_trips)} turer, {len(records)} delay-poster totalt")
         gc.collect()
 
     if not records:
