@@ -343,19 +343,21 @@ def _download_and_extract_hour(date_str, hour, force_download=False):
     return hour, hour_dir
 
 
-def fetch_vehicle_positions(date_str, hours, trip_lookup, force_download=False, max_workers=6):
+def fetch_vehicle_positions(date_str, hours, trip_lookup, force_download=False, max_workers=3):
     """Fetch and parse vehicle positions for a single date and list of hours.
 
-    Downloads all hours in parallel (max_workers threads), then parses sequentially.
+    Downloads hours in parallel (max_workers threads), then parses sequentially.
+    Failed hours are retried once after all others complete.
     Returns a DataFrame of segments (one row per continuous trip/state per vehicle).
     """
     active_states = {}
     finished_segments = []
     total_obs = 0
 
-    # Phase 1: Download & extract all hours in parallel
+    # Phase 1: Download & extract hours in parallel
     print(f"  Laddar ner {len(hours)} timmar parallellt (max {max_workers} trådar)...")
     hour_dirs = {}
+    failed_hours = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_download_and_extract_hour, date_str, hour, force_download): hour
@@ -366,6 +368,19 @@ def fetch_vehicle_positions(date_str, hours, trip_lookup, force_download=False, 
             if hour_dir is not None:
                 hour_dirs[hour] = hour_dir
                 print(f"    Timme {hour:02d} klar")
+            else:
+                failed_hours.append(hour)
+
+    # Retry failed hours sequentially (often timeout due to parallel load)
+    if failed_hours:
+        print(f"  Försöker igen med {len(failed_hours)} misslyckade timmar...")
+        time.sleep(5)
+        for hour in sorted(failed_hours):
+            print(f"    Retry timme {hour:02d}...")
+            hour, hour_dir = _download_and_extract_hour(date_str, hour, force_download)
+            if hour_dir is not None:
+                hour_dirs[hour] = hour_dir
+                print(f"    Timme {hour:02d} klar (retry)")
 
     print(f"  Nedladdning klar: {len(hour_dirs)}/{len(hours)} timmar")
 
@@ -474,17 +489,18 @@ def _download_and_extract_tu_hour(date_str, hour, force_download=False):
     return hour, hour_dir
 
 
-def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False, max_workers=6):
+def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False, max_workers=3):
     """Fetch GTFS-RT TripUpdates and extract per-stop delay data.
 
-    Downloads all hours in parallel, then parses sequentially.
+    Downloads hours in parallel, then parses sequentially.
     Returns a DataFrame with columns: route_short_name, direction_id, stop_id, delay_seconds.
     """
     records = []
 
-    # Phase 1: Download & extract all hours in parallel
-    print(f"  Laddar ner TripUpdates {len(hours)} timmar parallellt...")
+    # Phase 1: Download & extract hours in parallel
+    print(f"  Laddar ner TripUpdates {len(hours)} timmar parallellt (max {max_workers} trådar)...")
     hour_dirs = {}
+    failed_hours = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_download_and_extract_tu_hour, date_str, hour, force_download): hour
@@ -495,6 +511,16 @@ def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False, max_w
             if hour_dir is not None:
                 hour_dirs[hour] = hour_dir
                 print(f"    TU timme {hour:02d} nedladdad")
+            else:
+                failed_hours.append(hour)
+
+    if failed_hours:
+        print(f"  Försöker igen med {len(failed_hours)} misslyckade TU-timmar...")
+        time.sleep(5)
+        for hour in sorted(failed_hours):
+            hour, hour_dir = _download_and_extract_tu_hour(date_str, hour, force_download)
+            if hour_dir is not None:
+                hour_dirs[hour] = hour_dir
 
     print(f"  TripUpdates nedladdning klar: {len(hour_dirs)}/{len(hours)} timmar")
 
