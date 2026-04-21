@@ -54,22 +54,28 @@ from csv_handler import (
 )
 
 # ---- PERIODS TO FETCH ----
-MONTH_RANGES = [
-    ("2025-04-01", "2025-04-30"),
-    ("2025-05-01", "2025-05-31"),
-    ("2025-09-01", "2025-09-30"),
-    ("2025-10-01", "2025-10-31"),
-    ("2025-11-01", "2025-11-30"),
-    ("2026-02-01", "2026-02-28"),
-    ("2026-03-01", "2026-03-28"),
-]
-
-# Auto-add current month so every daily run includes today's data
-_today = datetime.today()
-_month_start = _today.replace(day=1).strftime("%Y-%m-%d")
-_month_end = _today.strftime("%Y-%m-%d")
-if not any(start == _month_start for start, _ in MONTH_RANGES):
-    MONTH_RANGES.append((_month_start, _month_end))
+# In GitHub Actions: only fetch yesterday (latest complete day).
+# Locally: fetch all configured historical periods.
+if os.environ.get("GITHUB_ACTIONS"):
+    _yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    MONTH_RANGES = [(_yesterday, _yesterday)]
+    print(f"GitHub Actions: hämtar endast {_yesterday}")
+else:
+    MONTH_RANGES = [
+        ("2025-04-01", "2025-04-30"),
+        ("2025-05-01", "2025-05-31"),
+        ("2025-09-01", "2025-09-30"),
+        ("2025-10-01", "2025-10-31"),
+        ("2025-11-01", "2025-11-30"),
+        ("2026-02-01", "2026-02-28"),
+        ("2026-03-01", "2026-03-28"),
+    ]
+    # Auto-add current month so local runs include today's data
+    _today = datetime.today()
+    _month_start = _today.replace(day=1).strftime("%Y-%m-%d")
+    _month_end = _today.strftime("%Y-%m-%d")
+    if not any(start == _month_start for start, _ in MONTH_RANGES):
+        MONTH_RANGES.append((_month_start, _month_end))
 
 HOURS = list(range(0, 24))
 
