@@ -1,0 +1,31 @@
+name: Daily Data Fetch
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 05:00 CEST (UTC+2, sommartid) / 04:00 CET (UTC+1, vintertid)
+  workflow_dispatch:        # Möjlighet att starta manuellt från GitHub
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # Behövs för att pusha data-CSV:er tillbaka till repot
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # Full historik så att git push fungerar korrekt
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -q pandas requests py7zr plotly gtfs-realtime-bindings
+
+      - name: Run daily fetch
+        env:
+          KODA_API_KEY: ${{ secrets.KODA_API_KEY }}
+        run: python fetch_all.py

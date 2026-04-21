@@ -64,6 +64,13 @@ MONTH_RANGES = [
     ("2026-03-01", "2026-03-28"),
 ]
 
+# Auto-add current month so every daily run includes today's data
+_today = datetime.today()
+_month_start = _today.replace(day=1).strftime("%Y-%m-%d")
+_month_end = _today.strftime("%Y-%m-%d")
+if not any(start == _month_start for start, _ in MONTH_RANGES):
+    MONTH_RANGES.append((_month_start, _month_end))
+
 HOURS = list(range(0, 24))
 
 
