@@ -57,14 +57,30 @@ def _build_summary_stats(observed, segments, dates=None, hours=None):
     else:
         avg_dur = "-"
 
-    # Operator breakdown
+    # Operator filter buttons with brand colors
+    op_color_map = {
+        "Keolis": "#1565c0",
+        "Nobina": "#2e7d32",
+        "VR Sverige": "#2e7d32",
+        "Transdev": "#c62828",
+        "Övrigt": "#D4A017",
+    }
     op_html = ""
     if total_obs > 0:
         op_counts = observed["operator"].value_counts()
-        chips = []
+        btns = ['<button class="op-btn active" data-op="all" data-color="#D4A017" '
+                'onclick="switchOperator(\'all\')" '
+                'style="background:#D4A017;color:#fff;border-color:#D4A017">'
+                'Alla <b>' + f'{total_obs}' + '</b></button>']
         for op, cnt in op_counts.items():
-            chips.append(f'<span class="op-chip">{html_escape(str(op))} <b>{cnt}</b></span>')
-        op_html = '<div class="op-row">' + " ".join(chips) + "</div>"
+            op_str = html_escape(str(op))
+            color = op_color_map.get(str(op), "#6b7280")
+            btns.append(
+                f'<button class="op-btn" data-op="{op_str}" data-color="{color}" '
+                f'onclick="switchOperator(\'{op_str}\')">'
+                f'{op_str} <b>{cnt}</b></button>'
+            )
+        op_html = '<div class="op-row">' + " ".join(btns) + "</div>"
 
     return f"""
     <div class="stats-grid">
@@ -93,7 +109,7 @@ def _build_summary_stats(observed, segments, dates=None, hours=None):
 
 
 def _build_deadhead_stop_view(observed):
-    """Build stop-based deadhead view with Vardag/Helg separation and OSRM time."""
+    """Build stop-based deadhead view with operator filtering, Vardag/Helg and OSRM."""
     periods = _period_order()
 
     if observed is None or observed.empty:
@@ -104,9 +120,13 @@ def _build_deadhead_stop_view(observed):
         cols.append("day_type")
     if "beräknad_körtid_min" in observed.columns:
         cols.append("beräknad_körtid_min")
-    obs = observed[cols].copy()
+    if "operator" in observed.columns:
+        cols.append("operator")
+    obs = observed[[c for c in cols if c in observed.columns]].copy()
     if "day_type" not in obs.columns:
         obs["day_type"] = "Vardag"
+    if "operator" not in obs.columns:
+        obs["operator"] = "Övrigt"
 
     obs = obs.dropna(subset=["from_stop_observed", "to_stop_observed"])
     obs = obs[obs["from_stop_observed"] != "-"]
@@ -115,21 +135,7 @@ def _build_deadhead_stop_view(observed):
     if obs.empty:
         return "<p class='empty'>Inga tomk&ouml;rningar att visa.</p>"
 
-    from_counts = obs.groupby("from_stop_observed").size().reset_index(name="count")
-    from_counts = from_counts.sort_values("count", ascending=False)
-
-    options_html = ""
-    for _, r in from_counts.iterrows():
-        name = html_escape(r["from_stop_observed"])
-        cnt = int(r["count"])
-        options_html += f'<option value="{name}">{name} ({cnt})</option>\n'
-
-    agg = (
-        obs.groupby(["from_stop_observed", "to_stop_observed", "period", "day_type"])
-        .agg(avg_min=("duration_min", "mean"), count=("duration_min", "size"))
-        .reset_index()
-    )
-
+    # OSRM lookup (global, not per-operator)
     osrm_agg = {}
     if "beräknad_körtid_min" in obs.columns:
         osrm_tmp = (
@@ -140,31 +146,59 @@ def _build_deadhead_stop_view(observed):
         for (f, t), v in osrm_tmp.items():
             osrm_agg[(f, t)] = round(v, 1)
 
-    js_data = {}
-    for from_stop, grp in agg.groupby("from_stop_observed"):
-        to_stops = {}
-        for _, row in grp.iterrows():
-            to_s = row["to_stop_observed"]
-            if to_s not in to_stops:
-                to_stops[to_s] = {
-                    "to": to_s,
-                    "vardag": {p: None for p in periods},
-                    "helg": {p: None for p in periods},
-                    "osrm": osrm_agg.get((from_stop, to_s)),
-                }
-            day_key = "vardag" if row["day_type"] == "Vardag" else "helg"
-            if row["period"] in to_stops[to_s][day_key]:
-                to_stops[to_s][day_key][row["period"]] = (
-                    round(row["avg_min"], 1) if pd.notna(row["avg_min"]) else None
-                )
-        js_data[from_stop] = sorted(to_stops.values(), key=lambda x: x["to"])
+    operators = sorted(obs["operator"].unique().tolist())
+    filter_keys = ["all"] + operators
 
-    return options_html, js_data
+    def _build_js_data(subset):
+        agg = (
+            subset.groupby(["from_stop_observed", "to_stop_observed", "period", "day_type"])
+            .agg(avg_min=("duration_min", "mean"), count=("duration_min", "size"))
+            .reset_index()
+        )
+        result = {}
+        for from_stop, grp in agg.groupby("from_stop_observed"):
+            to_stops = {}
+            for _, row in grp.iterrows():
+                to_s = row["to_stop_observed"]
+                if to_s not in to_stops:
+                    to_stops[to_s] = {
+                        "to": to_s,
+                        "vardag": {p: None for p in periods},
+                        "helg": {p: None for p in periods},
+                        "osrm": osrm_agg.get((from_stop, to_s)),
+                    }
+                day_key = "vardag" if row["day_type"] == "Vardag" else "helg"
+                if row["period"] in to_stops[to_s][day_key]:
+                    to_stops[to_s][day_key][row["period"]] = (
+                        round(row["avg_min"], 1) if pd.notna(row["avg_min"]) else None
+                    )
+            result[from_stop] = sorted(to_stops.values(), key=lambda x: x["to"])
+        return result
+
+    # Build deadhead data per operator (+ "all")
+    all_data = {}
+    for op_key in filter_keys:
+        subset = obs if op_key == "all" else obs[obs["operator"] == op_key]
+        all_data[op_key] = _build_js_data(subset) if not subset.empty else {}
+
+    # Build from_stop counts per (operator, day_type) for dropdown
+    from_counts = {}
+    for op_key in filter_keys:
+        subset = obs if op_key == "all" else obs[obs["operator"] == op_key]
+        from_counts[op_key] = {}
+        for dt in ["vardag", "helg"]:
+            dt_label = "Vardag" if dt == "vardag" else "Helg"
+            dt_sub = subset[subset["day_type"] == dt_label]
+            counts = dt_sub.groupby("from_stop_observed").size().to_dict()
+            from_counts[op_key][dt] = {k: int(v) for k, v in counts.items()}
+
+    return all_data, from_counts, operators
 
 
-def _deadhead_js(js_data):
-    """Generate JS for the deadhead stop view with Vardag/Helg toggle and OSRM column."""
-    data_json = json.dumps(js_data, ensure_ascii=False)
+def _deadhead_js(all_data, from_counts):
+    """Generate JS for deadhead view with operator filter, Vardag/Helg toggle, dynamic dropdown."""
+    data_json = json.dumps(all_data, ensure_ascii=False)
+    counts_json = json.dumps(from_counts, ensure_ascii=False)
     periods = _period_order()
 
     header_cols = ""
@@ -178,24 +212,68 @@ def _deadhead_js(js_data):
     row_cells += "'<td class=\"dim\">' + fmt(d.osrm) + '</td>' + "
 
     return f"""
-    var deadData = {data_json};
+    var deadDataByOp = {data_json};
+    var fromCountsByOpDay = {counts_json};
     var currentDayType = 'vardag';
+    var currentOperator = 'all';
+
+    function switchOperator(op) {{
+      currentOperator = op;
+      document.querySelectorAll('.op-btn').forEach(function(b) {{
+        var isActive = b.dataset.op === op;
+        b.classList.toggle('active', isActive);
+        if (isActive) {{
+          b.style.background = b.dataset.color;
+          b.style.borderColor = b.dataset.color;
+          b.style.color = '#fff';
+        }} else {{
+          b.style.background = '';
+          b.style.borderColor = '';
+          b.style.color = '';
+        }}
+      }});
+      rebuildDropdown();
+    }}
 
     function switchDayType(dt) {{
       currentDayType = dt;
       document.getElementById('dayVardag').className = 'pill' + (dt === 'vardag' ? ' active' : '');
       document.getElementById('dayHelg').className = 'pill' + (dt === 'helg' ? ' active' : '');
+      rebuildDropdown();
+    }}
+
+    function rebuildDropdown() {{
       var sel = document.getElementById('fromStopSelect');
-      if (sel.value) showFromStop(sel.value);
+      var prev = sel.value;
+      var counts = (fromCountsByOpDay[currentOperator] || {{}})[currentDayType] || {{}};
+      var entries = Object.keys(counts).map(function(k) {{ return {{name:k, count:counts[k]}}; }});
+      entries.sort(function(a,b) {{ return b.count - a.count; }});
+
+      sel.innerHTML = '<option value="">-- V\\u00e4lj --</option>';
+      entries.forEach(function(e) {{
+        var opt = document.createElement('option');
+        opt.value = e.name;
+        opt.textContent = e.name + ' (' + e.count + ')';
+        sel.appendChild(opt);
+      }});
+
+      // Restore previous selection if still available
+      if (prev && counts[prev]) {{
+        sel.value = prev;
+        showFromStop(prev);
+      }} else {{
+        document.getElementById('deadheadTable').innerHTML = '';
+      }}
     }}
 
     function showFromStop(name) {{
       var el = document.getElementById('deadheadTable');
-      if (!name || !deadData[name]) {{
+      var data = deadDataByOp[currentOperator] || {{}};
+      if (!name || !data[name]) {{
         el.innerHTML = '';
         return;
       }}
-      var rows = deadData[name];
+      var rows = data[name];
       var html = '<table class="data-table"><thead>' +
         '<tr><th>Till h&aring;llplats</th>' + {header_cols} '</tr>' +
         '</thead><tbody>';
@@ -383,10 +461,17 @@ def generate_html_report(observed, planned, segments, date_str,
     dh_result = _build_deadhead_stop_view(observed)
     if isinstance(dh_result, str):
         stop_options_html = ""
-        deadhead_table_js = "var deadData = {}; function showFromStop() {}"
+        deadhead_table_js = "var deadDataByOp={}; var fromCountsByOpDay={}; var currentOperator='all'; var currentDayType='vardag'; function showFromStop(){} function switchOperator(){} function switchDayType(){} function rebuildDropdown(){}"
     else:
-        stop_options_html, js_data = dh_result
-        deadhead_table_js = _deadhead_js(js_data)
+        all_data, from_counts_data, operators = dh_result
+        deadhead_table_js = _deadhead_js(all_data, from_counts_data)
+        # Build initial dropdown (all operators, vardag)
+        init_counts = from_counts_data.get("all", {}).get("vardag", {})
+        sorted_stops = sorted(init_counts.items(), key=lambda x: -x[1])
+        stop_options_html = ""
+        for name, cnt in sorted_stops:
+            esc = html_escape(name)
+            stop_options_html += f'<option value="{esc}">{esc} ({cnt})</option>\n'
 
     has_line_tab = line_stop_data is not None and len(line_stop_data) > 0
     line_tab_html = _build_line_tab(line_stop_data) if has_line_tab else ""
@@ -540,18 +625,23 @@ def generate_html_report(observed, planned, segments, date_str,
     letter-spacing:.05em; font-weight:500;
   }}
 
-  /* Operator chips */
+  /* Operator filter buttons */
   .op-row {{
     display:flex; flex-wrap:wrap; gap:.4rem;
     margin-bottom:1.5rem;
   }}
-  .op-chip {{
+  .op-btn {{
     display:inline-flex; align-items:center; gap:.35rem;
-    background:var(--surface); border:1px solid var(--border);
-    border-radius:20px; padding:.3rem .75rem;
-    font-size:.75rem; color:var(--text-dim);
+    background:var(--surface); border:2px solid var(--border);
+    border-radius:20px; padding:.35rem .85rem;
+    font-size:.78rem; color:var(--text-dim);
+    cursor:pointer; transition:all .15s; font-family:inherit;
   }}
-  .op-chip b {{ color:var(--text); font-weight:600; }}
+  .op-btn:hover {{ opacity:.85; }}
+  .op-btn.active {{
+    color:#fff; font-weight:600;
+  }}
+  .op-btn b {{ font-weight:700; }}
 
   /* ---- Tables ---- */
   .data-table {{ width:100%; border-collapse:collapse; font-size:.84rem; }}
@@ -631,6 +721,14 @@ def generate_html_report(observed, planned, segments, date_str,
 
   .empty {{ color:var(--text-dim); font-style:italic; padding:1rem 0; }}
 
+  /* ---- Watermark logo ---- */
+  .watermark {{
+    position:fixed; bottom:-8%; left:-5%;
+    width:45%; opacity:0.04;
+    pointer-events:none; z-index:0;
+    user-select:none;
+  }}
+
   /* ---- Footer ---- */
   .footer {{
     text-align:center; padding:2rem 1rem 1.5rem;
@@ -694,6 +792,8 @@ def generate_html_report(observed, planned, segments, date_str,
   Kontakt: <a href="mailto:Hevi@gmail.com">Hevi@gmail.com</a>
 </div>
 
+<img src="logo.png" class="watermark" alt="">
+
 </div>
 
 <script>
@@ -710,6 +810,19 @@ function switchTopTab(btn, panelId) {{
 PLACEHOLDER_DEADHEAD_JS
 
 PLACEHOLDER_LINE_JS
+
+// Auto-select line 1 on page load
+document.addEventListener('DOMContentLoaded', function() {{
+  var lineSel = document.getElementById('lineSelect');
+  if (lineSel) {{
+    var opts = Array.from(lineSel.options);
+    var match = opts.find(function(o) {{ return o.value === '1'; }});
+    if (match) {{
+      lineSel.value = '1';
+      showLine('1');
+    }}
+  }}
+}});
 </script>
 
 </body>

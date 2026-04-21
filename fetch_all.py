@@ -4,6 +4,15 @@
 Designed to run unattended for hours/days. Resumes automatically
 from where it left off using fetched_days.csv.
 
+For each day:
+1. Fetches vehicle positions (segments) — kept in memory only
+2. Computes deadheads directly from segments
+3. Fetches TripUpdates and saves aggregated delay stats
+4. Pushes deadheads + delay stats + fetched_days to git
+
+Segments are NOT saved to disk (too large, >100MB). Only the
+useful outputs (deadheads, delay stats) are persisted.
+
 Usage:
     # On any machine with Python 3.8+:
     pip install pandas requests py7zr gtfs-realtime-bindings
@@ -32,10 +41,16 @@ os.environ["KODA_API_KEY"] = os.environ.get(
 
 import pandas as pd
 from config import OPERATOR_MAPPING
-from fetcher import load_static_gtfs, build_trip_lookup, fetch_vehicle_positions, filter_bus_segments
+from fetcher import (
+    load_static_gtfs, build_trip_lookup,
+    fetch_vehicle_positions, filter_bus_segments,
+    fetch_trip_updates,
+)
+from analysis import build_observed_deadheads, filter_deadheads_osrm
 from csv_handler import (
-    load_segments, get_fetched_days, mark_day_fetched,
-    save_segments, push_data_to_git,
+    get_fetched_days, mark_day_fetched,
+    load_deadheads, save_deadheads,
+    save_delay_stats, push_data_to_git,
 )
 
 # ---- PERIODS TO FETCH ----
@@ -115,16 +130,13 @@ def main():
     trip_lookup = build_trip_lookup(trips, routes, operator_df, stop_times, stops)
     print(f"Trip lookup: {len(trip_lookup)} trips\n")
 
-    # Load cached segments
-    cached_segments = load_segments()
-    all_new_segments = []
-
     for idx, date in enumerate(to_fetch, 1):
         day_start = time.time()
         print(f"\n{'='*60}")
         print(f"[{idx}/{len(to_fetch)}] {date}  ({datetime.now().strftime('%H:%M:%S')})")
         print(f"{'='*60}")
 
+        # --- Fetch vehicle positions (segments in memory only) ---
         try:
             seg = fetch_vehicle_positions(date, HOURS, trip_lookup)
         except Exception as e:
@@ -136,20 +148,34 @@ def main():
             print(f"  Varning: ingen data för {date}, hoppar över.")
             continue
 
-        all_new_segments.append(seg)
+        # --- Compute deadheads directly from segments ---
+        seg = filter_bus_segments(seg)
+        print(f"  Beräknar tomkörningar från {len(seg):,} segment...")
+        observed = build_observed_deadheads(seg, stops)
+
+        if not observed.empty:
+            observed = filter_deadheads_osrm(observed, min_ratio=0.5, max_ratio=2.0)
+            save_deadheads(observed)
+            print(f"  {len(observed)} deadheads sparade")
+
+        # --- Fetch TripUpdates and save delay stats ---
+        try:
+            delays = fetch_trip_updates(date, HOURS, trip_lookup)
+            if not delays.empty:
+                save_delay_stats(delays)
+                print(f"  Förseningsdata: {len(delays):,} poster sparade")
+        except Exception as e:
+            print(f"  Kunde inte hämta TripUpdates: {e}")
+
         mark_day_fetched(date)
 
-        # Save combined segments
-        parts = [cached_segments] + all_new_segments if not cached_segments.empty else all_new_segments
-        combined = pd.concat(parts, ignore_index=True)
-        combined = filter_bus_segments(combined)
-        dedup_cols = ["vehicle_id", "start_time", "end_time", "route_short_name"]
-        available = [c for c in dedup_cols if c in combined.columns]
-        combined = combined.drop_duplicates(subset=available, keep="last").reset_index(drop=True)
-        save_segments(combined)
-
-        # Push to git
+        # Push to git (deadheads + delay stats + fetched_days)
         push_data_to_git(f"Data: {date} ({idx}/{len(to_fetch)})")
+
+        # Segments are not saved — free the memory
+        del seg, observed
+        import gc
+        gc.collect()
 
         elapsed_day = time.time() - day_start
         elapsed_total = time.time() - start_time

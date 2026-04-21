@@ -10,6 +10,7 @@ from config import DATA_DIR
 
 SEGMENTS_CSV = os.path.join(DATA_DIR, "all_segments.csv")
 DEADHEADS_CSV = os.path.join(DATA_DIR, "all_deadheads.csv")
+DELAY_STATS_CSV = os.path.join(DATA_DIR, "all_delay_stats.csv")
 OSRM_CSV = os.path.join(DATA_DIR, "osrm_cache.csv")
 FETCHED_DAYS_CSV = os.path.join(DATA_DIR, "fetched_days.csv")
 
@@ -21,7 +22,9 @@ def push_data_to_git(message="Update cached data"):
     """
     import time as _time
 
-    data_files = [SEGMENTS_CSV, DEADHEADS_CSV, OSRM_CSV, FETCHED_DAYS_CSV]
+    # Segments CSV is NOT pushed — it's too large (>100MB) and only used
+    # as intermediate data for deadhead computation.
+    data_files = [DEADHEADS_CSV, DELAY_STATS_CSV, OSRM_CSV, FETCHED_DAYS_CSV]
     existing = [f for f in data_files if os.path.exists(f)]
     if not existing:
         print("  Git push: inga data-filer att pusha.")
@@ -146,6 +149,49 @@ def load_deadheads(path=None):
         return pd.DataFrame()
     df = pd.read_csv(path, parse_dates=["deadhead_start", "deadhead_end"])
     print(f"  Laddade {len(df)} tomkörningar från {path}")
+    return df
+
+
+def save_delay_stats(delays_df, path=None):
+    """Save per-stop delay stats, merging with existing aggregated data.
+
+    Takes raw delay records (route_short_name, direction_id, stop_id, delay_seconds)
+    and aggregates into cumulative totals that accumulate across sessions.
+    """
+    path = path or DELAY_STATS_CSV
+    if delays_df is None or delays_df.empty:
+        return
+
+    # Aggregate new data
+    new_agg = (
+        delays_df.groupby(["route_short_name", "direction_id", "stop_id"], as_index=False)
+        .agg(total_delay_seconds=("delay_seconds", "sum"), n_obs=("delay_seconds", "size"))
+    )
+
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        existing = pd.read_csv(path, dtype={"stop_id": str, "direction_id": str})
+        # Merge: sum totals and counts
+        combined = pd.concat([existing, new_agg], ignore_index=True)
+        combined = (
+            combined.groupby(["route_short_name", "direction_id", "stop_id"], as_index=False)
+            .agg(total_delay_seconds=("total_delay_seconds", "sum"), n_obs=("n_obs", "sum"))
+        )
+    else:
+        combined = new_agg
+
+    combined = combined.sort_values(["route_short_name", "direction_id", "stop_id"]).reset_index(drop=True)
+    combined.to_csv(path, index=False, encoding="utf-8-sig")
+    print(f"  Förseningsstatistik sparad: {len(combined)} stopp -> {path}")
+    return combined
+
+
+def load_delay_stats(path=None):
+    """Load aggregated delay stats from CSV."""
+    path = path or DELAY_STATS_CSV
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return pd.DataFrame()
+    df = pd.read_csv(path, dtype={"stop_id": str, "direction_id": str})
+    print(f"  Laddade förseningsstatistik: {len(df)} stopp från {path}")
     return df
 
 
