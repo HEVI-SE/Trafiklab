@@ -323,6 +323,14 @@ def _build_line_tab(line_stop_data):
         <button class="pill active" id="dirABtn" onclick="switchDir('A')">Riktning A</button>
         <button class="pill" id="dirBBtn" onclick="switchDir('B')">Riktning B</button>
       </div>
+      <label for="peakSelect" style="margin-left:1rem">Trafikperiod</label>
+      <select id="peakSelect" onchange="switchPeak(this.value)">
+        <option value="Allt">Allt</option>
+        <option value="FM-topp">FM-topp (06&ndash;09)</option>
+        <option value="Dag">Dag (09&ndash;15)</option>
+        <option value="EM-topp">EM-topp (15&ndash;18)</option>
+        <option value="Natt">Natt (18&ndash;06)</option>
+      </select>
       <span id="lineInfo" class="meta"></span>
     </div>
     <div id="lineMap"></div>
@@ -340,6 +348,7 @@ def _leaflet_js(line_stop_data):
     var lineLayer = null;
     var currentLine = '';
     var currentDir = 'A';
+    var currentPeak = 'Allt';
 
     function initMap() {{
       if (map) return;
@@ -366,10 +375,21 @@ def _leaflet_js(line_stop_data):
       return sign + (d/60).toFixed(1) + ' min';
     }}
 
+    function getDelay(s) {{
+      if (currentPeak === 'Allt') return s.avg_delay;
+      var d = s.delays_by_peak;
+      return (d && d[currentPeak] !== undefined) ? d[currentPeak] : null;
+    }}
+
     function switchDir(dir) {{
       currentDir = dir;
       document.getElementById('dirABtn').className = 'pill' + (dir === 'A' ? ' active' : '');
       document.getElementById('dirBBtn').className = 'pill' + (dir === 'B' ? ' active' : '');
+      renderLine();
+    }}
+
+    function switchPeak(peak) {{
+      currentPeak = peak;
       renderLine();
     }}
 
@@ -412,18 +432,19 @@ def _leaflet_js(line_stop_data):
       stops.forEach(function(s) {{
         if (s.lat === null || s.lon === null) return;
         coords.push([s.lat, s.lon]);
-        var color = delayColor(s.avg_delay);
+        var delay = getDelay(s);
+        var color = delayColor(delay);
         L.circleMarker([s.lat, s.lon], {{
           radius: 7, fillColor: color, color: '#fff', weight: 2, fillOpacity: 0.9,
         }}).bindPopup(
           '<b>' + s.stop_name + '</b><br>' +
           'H\\u00e5llplats ' + s.seq + '<br>' +
-          'F\\u00f6rsening: ' + delayLabel(s.avg_delay)
+          'F\\u00f6rsening: ' + delayLabel(delay)
         ).addTo(lineLayer);
 
         tableRows += '<tr><td>' + s.seq + '</td>' +
           '<td>' + s.stop_name + '</td>' +
-          '<td style="color:' + color + ';font-weight:600">' + delayLabel(s.avg_delay) + '</td></tr>';
+          '<td style="color:' + color + ';font-weight:600">' + delayLabel(delay) + '</td></tr>';
       }});
 
       if (coords.length > 1) {{

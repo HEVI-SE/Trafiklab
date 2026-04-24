@@ -637,17 +637,48 @@ def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df
     stops_small = stops_df[["stop_id", "stop_name", "stop_lat", "stop_lon"]].drop_duplicates(subset=["stop_id"])
 
     # Build delay lookup if available
+    _PEAKS = ["FM-topp", "Dag", "EM-topp", "Natt"]
     delay_lookup = {}
     if delays_df is not None and not delays_df.empty:
-        agg = delays_df.groupby(["route_short_name", "stop_id"]).agg(
-            avg_delay=("delay_seconds", "mean"),
-            n_obs=("delay_seconds", "size"),
-        ).reset_index()
-        for _, r in agg.iterrows():
-            delay_lookup[(r["route_short_name"], r["stop_id"])] = {
-                "avg_delay": round(r["avg_delay"], 1),
-                "n_obs": int(r["n_obs"]),
-            }
+        if "peak" in delays_df.columns:
+            # New format: peak-level aggregated stats (total_delay_seconds, n_obs, peak)
+            overall = (
+                delays_df.groupby(["route_short_name", "stop_id"], as_index=False)
+                .agg(total=("total_delay_seconds", "sum"), n=("n_obs", "sum"))
+            )
+            overall["avg_delay"] = overall["total"] / overall["n"]
+
+            per_peak = {}
+            for peak in _PEAKS:
+                sub = delays_df[delays_df["peak"] == peak]
+                if sub.empty:
+                    continue
+                pagg = sub.groupby(["route_short_name", "stop_id"], as_index=False).agg(
+                    total=("total_delay_seconds", "sum"), n=("n_obs", "sum")
+                )
+                pagg["avg_delay"] = pagg["total"] / pagg["n"]
+                for _, r in pagg.iterrows():
+                    per_peak.setdefault((r["route_short_name"], r["stop_id"]), {})[peak] = round(r["avg_delay"], 1)
+
+            for _, r in overall.iterrows():
+                key = (r["route_short_name"], r["stop_id"])
+                delay_lookup[key] = {
+                    "avg_delay": round(r["avg_delay"], 1),
+                    "n_obs": int(r["n"]),
+                    "delays_by_peak": per_peak.get(key, {}),
+                }
+        else:
+            # Legacy format: raw delay_seconds column
+            agg = delays_df.groupby(["route_short_name", "stop_id"]).agg(
+                avg_delay=("delay_seconds", "mean"),
+                n_obs=("delay_seconds", "size"),
+            ).reset_index()
+            for _, r in agg.iterrows():
+                delay_lookup[(r["route_short_name"], r["stop_id"])] = {
+                    "avg_delay": round(r["avg_delay"], 1),
+                    "n_obs": int(r["n_obs"]),
+                    "delays_by_peak": {},
+                }
 
     result = {}
     for _, trip_row in best.iterrows():
@@ -663,7 +694,7 @@ def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df
 
         stop_list = []
         for _, s in trip_stops.iterrows():
-            delay_info = delay_lookup.get((rsn, s["stop_id"]), {"avg_delay": None, "n_obs": 0})
+            delay_info = delay_lookup.get((rsn, s["stop_id"]), {"avg_delay": None, "n_obs": 0, "delays_by_peak": {}})
             stop_list.append({
                 "stop_id": s["stop_id"],
                 "stop_name": safe_str(s["stop_name"], "?"),
@@ -672,6 +703,7 @@ def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df
                 "seq": int(s["stop_sequence"]),
                 "avg_delay": delay_info["avg_delay"],
                 "n_obs": delay_info["n_obs"],
+                "delays_by_peak": delay_info.get("delays_by_peak", {}),
             })
 
         key = rsn if did == "0" else f"{rsn}_r"

@@ -33,7 +33,7 @@ def classify_peak(hour: int) -> str:
         return "FM-topp"
     if 9 <= hour < 15:
         return "Dag"
-    if 15 <= hour < 19:
+    if 15 <= hour < 18:
         return "EM-topp"
     return "Natt"
 
