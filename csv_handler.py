@@ -152,36 +152,44 @@ def load_deadheads(path=None):
     return df
 
 
-def save_delay_stats(delays_df, path=None):
-    """Save per-stop delay stats, merging with existing aggregated data.
+_GROUP_KEYS = ["route_short_name", "direction_id", "stop_id", "year", "peak"]
 
-    Takes raw delay records (route_short_name, direction_id, stop_id, delay_seconds)
-    and aggregates into cumulative totals that accumulate across sessions.
+
+def save_delay_stats(delays_df, path=None):
+    """Save per-stop delay stats grouped by year and peak period.
+
+    Takes raw delay records with columns:
+        route_short_name, direction_id, stop_id, delay_seconds, year, hour
+    Computes peak from hour, then aggregates cumulative totals per
+    (route, direction, stop, year, peak).
     """
+    from utils import classify_peak
+
     path = path or DELAY_STATS_CSV
     if delays_df is None or delays_df.empty:
         return
 
-    # Aggregate new data
+    df = delays_df.copy()
+    df["peak"] = df["hour"].apply(classify_peak)
+
     new_agg = (
-        delays_df.groupby(["route_short_name", "direction_id", "stop_id"], as_index=False)
+        df.groupby(_GROUP_KEYS, as_index=False)
         .agg(total_delay_seconds=("delay_seconds", "sum"), n_obs=("delay_seconds", "size"))
     )
 
     if os.path.exists(path) and os.path.getsize(path) > 0:
-        existing = pd.read_csv(path, dtype={"stop_id": str, "direction_id": str})
-        # Merge: sum totals and counts
+        existing = pd.read_csv(path, dtype={"stop_id": str, "direction_id": str, "year": str})
         combined = pd.concat([existing, new_agg], ignore_index=True)
         combined = (
-            combined.groupby(["route_short_name", "direction_id", "stop_id"], as_index=False)
+            combined.groupby(_GROUP_KEYS, as_index=False)
             .agg(total_delay_seconds=("total_delay_seconds", "sum"), n_obs=("n_obs", "sum"))
         )
     else:
         combined = new_agg
 
-    combined = combined.sort_values(["route_short_name", "direction_id", "stop_id"]).reset_index(drop=True)
+    combined = combined.sort_values(_GROUP_KEYS).reset_index(drop=True)
     combined.to_csv(path, index=False, encoding="utf-8-sig")
-    print(f"  Förseningsstatistik sparad: {len(combined)} stopp -> {path}")
+    print(f"  Förseningsstatistik sparad: {len(combined)} rader -> {path}")
     return combined
 
 
@@ -190,8 +198,8 @@ def load_delay_stats(path=None):
     path = path or DELAY_STATS_CSV
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return pd.DataFrame()
-    df = pd.read_csv(path, dtype={"stop_id": str, "direction_id": str})
-    print(f"  Laddade förseningsstatistik: {len(df)} stopp från {path}")
+    df = pd.read_csv(path, dtype={"stop_id": str, "direction_id": str, "year": str})
+    print(f"  Laddade förseningsstatistik: {len(df)} rader från {path}")
     return df
 
 

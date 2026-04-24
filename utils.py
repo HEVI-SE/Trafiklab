@@ -27,6 +27,17 @@ def safe_str(x, default="-"):
     return s
 
 
+def classify_peak(hour: int) -> str:
+    """Classify an hour (0-23) into one of four traffic peak periods."""
+    if 6 <= hour < 9:
+        return "FM-topp"
+    if 9 <= hour < 15:
+        return "Dag"
+    if 15 <= hour < 19:
+        return "EM-topp"
+    return "Natt"
+
+
 def classify_period(ts):
     """Classify a timestamp into a traffic period."""
     if pd.isna(ts):

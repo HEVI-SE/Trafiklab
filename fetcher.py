@@ -583,6 +583,8 @@ def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False, max_w
                             "direction_id": did,
                             "stop_id": stop_id,
                             "delay_seconds": delay,
+                            "year": int(date_str[:4]),
+                            "hour": hour,
                         })
 
         print(f"    TripUpdates timme {hour:02d}: {len(seen_trips)} turer, {len(records)} delay-poster totalt")
