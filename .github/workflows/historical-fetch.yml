@@ -1,0 +1,31 @@
+name: Historical Data Fetch (sep 2025 – mar 2026)
+
+on:
+  schedule:
+    - cron: '0 11 * * *'   # 13:00 CEST (UTC+2, sommartid) / 12:00 CET (UTC+1, vintertid)
+  workflow_dispatch:        # Manuell trigger för test
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -q pandas requests py7zr plotly gtfs-realtime-bindings
+
+      - name: Fetch next 3 historical days
+        env:
+          KODA_API_KEY: ${{ secrets.KODA_API_KEY }}
+        run: python fetch_historical.py
