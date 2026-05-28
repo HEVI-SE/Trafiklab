@@ -333,7 +333,10 @@ def _build_line_tab(line_stop_data):
       </select>
       <span id="lineInfo" class="meta"></span>
     </div>
-    <div id="lineMap"></div>
+    <div class="map-wrapper">
+      <div id="lineMap"></div>
+      <img src="icons/powered.png" class="map-powered" alt="">
+    </div>
     <div id="lineStopTable"></div>
     """
 
@@ -531,7 +534,8 @@ def generate_html_report(observed, planned, segments, date_str,
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SL Bussanalys</title>
+<title>Liljelogg</title>
+<link rel="icon" type="image/png" href="icons/favicon_black.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 {leaflet_css}
@@ -575,11 +579,7 @@ def generate_html_report(observed, planned, segments, date_str,
     font-weight:700; font-size:1.15rem; letter-spacing:-.02em;
     display:flex; align-items:center; gap:.5rem;
   }}
-  .brand-mark {{
-    background:var(--accent); color:#1a1a1a;
-    font-weight:700; font-size:.75rem; padding:3px 8px;
-    border-radius:4px; letter-spacing:.06em;
-  }}
+  .brand-logo {{ height:32px; width:auto; }}
   .brand-sub {{ color:var(--text-dim); font-weight:400; font-size:.85rem; }}
 
   /* ---- Page ---- */
@@ -742,12 +742,12 @@ def generate_html_report(observed, planned, segments, date_str,
 
   .empty {{ color:var(--text-dim); font-style:italic; padding:1rem 0; }}
 
-  /* ---- Watermark logo ---- */
-  .watermark {{
-    position:fixed; bottom:-8%; left:-5%;
-    width:45%; opacity:0.04;
-    pointer-events:none; z-index:0;
-    user-select:none;
+  /* ---- Map wrapper with powered overlay ---- */
+  .map-wrapper {{ position:relative; }}
+  .map-powered {{
+    position:absolute; bottom:12px; left:12px;
+    height:44px; opacity:0.22;
+    pointer-events:none; z-index:1000; user-select:none;
   }}
 
   /* ---- Footer ---- */
@@ -774,8 +774,8 @@ def generate_html_report(observed, planned, segments, date_str,
 <div class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <span class="brand-mark">SL</span>
-      Bussanalys
+      <img src="icons/logo yellow.png" class="brand-logo" alt="Liljelogg">
+      Liljelogg
     </div>
     <span class="brand-sub">Tomk&ouml;rningar &amp; f&ouml;rseningar</span>
   </div>
@@ -810,10 +810,8 @@ def generate_html_report(observed, planned, segments, date_str,
 </div>
 
 <div class="footer">
-  Kontakt: <a href="mailto:Hevi@gmail.com">Hevi@gmail.com</a>
+  Kontakt: <a href="mailto:HEVI.Trafik@gmail.com">HEVI.Trafik@gmail.com</a>
 </div>
-
-<img src="logo.png" class="watermark" alt="">
 
 </div>
 
