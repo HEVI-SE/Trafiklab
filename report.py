@@ -536,6 +536,14 @@ def generate_html_report(observed, planned, segments, date_str,
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Liljelogg</title>
 <link rel="icon" type="image/png" href="icons/favicon_black.png">
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-SJ83FQZF0X"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){{dataLayer.push(arguments);}}
+  gtag('js', new Date());
+  gtag('config', 'G-SJ83FQZF0X');
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 {leaflet_css}
