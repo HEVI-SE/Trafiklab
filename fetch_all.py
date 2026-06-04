@@ -94,15 +94,17 @@ def generate_dates(month_ranges):
 def load_gtfs_for_all_periods(month_ranges):
     """Load and merge GTFS for all month ranges."""
     gtfs_dates = sorted(set(start for start, _ in month_ranges))
-    all_routes, all_trips, all_stops, all_stop_times = [], [], [], []
+    all_routes, all_trips, all_stops, all_stop_times, all_shapes = [], [], [], [], []
 
     for date in gtfs_dates:
         try:
-            r, t, s, st = load_static_gtfs(date)
+            r, t, s, st, sh = load_static_gtfs(date)
             all_routes.append(r)
             all_trips.append(t)
             all_stops.append(s)
             all_stop_times.append(st)
+            if sh is not None:
+                all_shapes.append(sh)
             print(f"  GTFS {date}: {len(r)} routes, {len(t)} trips, {len(s)} stops")
         except Exception as e:
             print(f"  GTFS {date}: FEL - {e}")
@@ -113,7 +115,10 @@ def load_gtfs_for_all_periods(month_ranges):
     stop_times = pd.concat(all_stop_times, ignore_index=True).drop_duplicates(
         subset=["trip_id", "stop_id", "stop_sequence"], keep="last"
     )
-    return routes, trips, stops, stop_times
+    shapes = pd.concat(all_shapes, ignore_index=True).drop_duplicates(
+        subset=["shape_id", "shape_pt_sequence"], keep="last"
+    ) if all_shapes else None
+    return routes, trips, stops, stop_times, shapes
 
 
 def main():

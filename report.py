@@ -450,7 +450,10 @@ def _leaflet_js(line_stop_data):
           '<td style="color:' + color + ';font-weight:600">' + delayLabel(delay) + '</td></tr>';
       }});
 
-      if (coords.length > 1) {{
+      var shapeCoords = info.shape || [];
+      if (shapeCoords.length > 1) {{
+        L.polyline(shapeCoords, {{color: '#D4A017', weight: 3, opacity: 0.6}}).addTo(lineLayer);
+      }} else if (coords.length > 1) {{
         L.polyline(coords, {{color: '#D4A017', weight: 3, opacity: 0.6}}).addTo(lineLayer);
       }}
 
@@ -534,7 +537,7 @@ def generate_html_report(observed, planned, segments, date_str,
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Liljelogg</title>
+<title>Linjelogg</title>
 <link rel="icon" type="image/png" href="icons/favicon_black.png">
 <!-- Google tag (gtag.js) -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-SJ83FQZF0X"></script>
@@ -782,8 +785,8 @@ def generate_html_report(observed, planned, segments, date_str,
 <div class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <img src="icons/logo yellow.png" class="brand-logo" alt="Liljelogg">
-      Liljelogg
+      <img src="icons/logo yellow.png" class="brand-logo" alt="Linjelogg">
+      Linjelogg
     </div>
     <span class="brand-sub">Tomk&ouml;rningar &amp; f&ouml;rseningar</span>
   </div>

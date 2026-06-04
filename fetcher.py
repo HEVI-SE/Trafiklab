@@ -74,6 +74,7 @@ def load_static_gtfs(date_str, force_download=False):
     trips_txt = os.path.join(date_dir, "trips.txt")
     stops_txt = os.path.join(date_dir, "stops.txt")
     stop_times_txt = os.path.join(date_dir, "stop_times.txt")
+    shapes_txt = os.path.join(date_dir, "shapes.txt")
 
     if force_download or not file_exists_nonempty(zip_path):
         print(f"Hämtar static GTFS för {date_str}...")
@@ -102,7 +103,14 @@ def load_static_gtfs(date_str, force_download=False):
     stop_times["stop_id"] = stop_times["stop_id"].astype(str)
     stop_times["stop_sequence"] = pd.to_numeric(stop_times["stop_sequence"], errors="coerce")
 
-    return routes, trips, stops, stop_times
+    shapes = None
+    if os.path.exists(shapes_txt):
+        shapes = pd.read_csv(shapes_txt, dtype=str)
+        shapes["shape_pt_lat"] = pd.to_numeric(shapes["shape_pt_lat"], errors="coerce")
+        shapes["shape_pt_lon"] = pd.to_numeric(shapes["shape_pt_lon"], errors="coerce")
+        shapes["shape_pt_sequence"] = pd.to_numeric(shapes["shape_pt_sequence"], errors="coerce")
+
+    return routes, trips, stops, stop_times, shapes
 
 
 def build_trip_lookup(trips_df, routes_df, operator_df, stop_times_df, stops_df):
@@ -599,11 +607,8 @@ def fetch_trip_updates(date_str, hours, trip_lookup, force_download=False, max_w
     return df
 
 
-def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df=None):
-    """Build per-line stop sequences with optional delay data.
-
-    Returns a dict: {route_short_name: [{stop_id, stop_name, lat, lon, seq, avg_delay, n_obs}, ...]}
-    """
+def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df=None, shapes_df=None):
+    """Build per-line stop sequences with optional delay data and route geometry."""
     from config import BUS_ROUTE_TYPES
 
     # Filter to bus routes
@@ -635,6 +640,24 @@ def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df
     )
 
     stops_small = stops_df[["stop_id", "stop_name", "stop_lat", "stop_lon"]].drop_duplicates(subset=["stop_id"])
+
+    shape_coords = {}
+    if shapes_df is not None and not shapes_df.empty and "shape_id" in trips_bus.columns:
+        for _, row in best.iterrows():
+            tid = row["trip_id"]
+            trip_match = trips_bus[trips_bus["trip_id"] == tid]
+            if trip_match.empty or pd.isna(trip_match.iloc[0].get("shape_id")):
+                continue
+            sid = str(trip_match.iloc[0]["shape_id"])
+            if sid in shape_coords:
+                continue
+            pts = shapes_df[shapes_df["shape_id"] == sid].sort_values("shape_pt_sequence")
+            if not pts.empty:
+                shape_coords[sid] = [
+                    [float(r["shape_pt_lat"]), float(r["shape_pt_lon"])]
+                    for _, r in pts.iterrows()
+                    if pd.notna(r["shape_pt_lat"]) and pd.notna(r["shape_pt_lon"])
+                ]
 
     # Build delay lookup if available
     _PEAKS = ["FM-topp", "Dag", "EM-topp", "Natt"]
@@ -706,11 +729,18 @@ def build_line_stop_data(routes_df, trips_df, stop_times_df, stops_df, delays_df
                 "delays_by_peak": delay_info.get("delays_by_peak", {}),
             })
 
+        shape_geom = []
+        if shapes_df is not None and "shape_id" in trips_bus.columns:
+            trip_match = trips_bus[trips_bus["trip_id"] == tid]
+            if not trip_match.empty and pd.notna(trip_match.iloc[0].get("shape_id")):
+                shape_geom = shape_coords.get(str(trip_match.iloc[0]["shape_id"]), [])
+
         key = rsn if did == "0" else f"{rsn}_r"
         result[key] = {
             "name": rsn,
             "direction": did,
             "stops": stop_list,
+            "shape": shape_geom,
         }
 
     print(f"  Linjedata: {len(result)} linjeriktningar")

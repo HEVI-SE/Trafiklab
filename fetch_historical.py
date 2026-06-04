@@ -74,15 +74,17 @@ def main():
 
     # Load GTFS for all unique months in the batch
     month_starts = sorted(set(d[:8] + "01" for d in batch))
-    all_routes, all_trips, all_stops, all_stop_times = [], [], [], []
+    all_routes, all_trips, all_stops, all_stop_times, all_shapes = [], [], [], [], []
     print("\nLaddar GTFS...")
     for ms in month_starts:
         try:
-            r, t, s, st = load_static_gtfs(ms)
+            r, t, s, st, sh = load_static_gtfs(ms)
             all_routes.append(r)
             all_trips.append(t)
             all_stops.append(s)
             all_stop_times.append(st)
+            if sh is not None:
+                all_shapes.append(sh)
             print(f"  {ms}: {len(r)} routes, {len(t)} trips")
         except Exception as e:
             print(f"  {ms}: FEL - {e}")
