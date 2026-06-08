@@ -143,7 +143,7 @@ def main():
 
     # Load GTFS
     print("\nLaddar GTFS...")
-    routes, trips, stops, stop_times = load_gtfs_for_all_periods(MONTH_RANGES)
+    routes, trips, stops, stop_times, shapes = load_gtfs_for_all_periods(MONTH_RANGES)
     operator_df = pd.DataFrame(OPERATOR_MAPPING)
     trip_lookup = build_trip_lookup(trips, routes, operator_df, stop_times, stops)
     print(f"Trip lookup: {len(trip_lookup)} trips\n")
