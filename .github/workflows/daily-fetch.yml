@@ -1,9 +1,18 @@
-name: Daily Data Fetch
+# ============================================================================
+# DEPRECATED — data collection has moved to hevi-se/linjelogg.
+#
+# The nightly fetch AND the HTML report generation now live in the linjelogg
+# repository (.github/workflows/daily.yml), which fetches the latest day,
+# regenerates index.html with all historical data, and publishes the site.
+#
+# The schedule has been removed so the two repositories don't fetch the same
+# data in parallel and diverge. This file is kept only as a manual escape
+# hatch (workflow_dispatch) and can be deleted once the move is confirmed.
+# ============================================================================
+name: Daily Data Fetch (DEPRECATED — moved to linjelogg)
 
 on:
-  schedule:
-    - cron: '0 3 * * *'   # 05:00 CEST (UTC+2, sommartid) / 04:00 CET (UTC+1, vintertid)
-  workflow_dispatch:        # Möjlighet att starta manuellt från GitHub
+  workflow_dispatch:        # Endast manuell körning; ingen schemalagd trigger längre
 
 jobs:
   fetch:

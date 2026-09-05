@@ -1,9 +1,15 @@
-name: Historical Data Fetch (sep 2025 – mar 2026)
+# ============================================================================
+# DEPRECATED — data collection has moved to hevi-se/linjelogg.
+#
+# Historical back-filling is complete and the live pipeline now lives in the
+# linjelogg repository (.github/workflows/daily.yml). The schedule has been
+# removed so the two repositories don't fetch in parallel and diverge. This
+# file is kept only as a manual escape hatch (workflow_dispatch).
+# ============================================================================
+name: Historical Data Fetch (DEPRECATED — moved to linjelogg)
 
 on:
-  schedule:
-    - cron: '0 11 * * *'   # 13:00 CEST (UTC+2, sommartid) / 12:00 CET (UTC+1, vintertid)
-  workflow_dispatch:        # Manuell trigger för test
+  workflow_dispatch:        # Endast manuell körning; ingen schemalagd trigger längre
 
 jobs:
   fetch:
