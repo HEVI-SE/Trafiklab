@@ -11,9 +11,15 @@ That repository now contains everything in one place:
   `index.html` with the full history, and publishes the site
   (linjelogg.se).
 
-The scheduled workflows in this repository have been **disabled** (they now
-only run on manual `workflow_dispatch`) so the two repositories don't fetch
-the same data in parallel and diverge.
+The scheduled workflows in this repository have been **deleted**. They were
+still fetching the same KoDa data as linjelogg every day — roughly doubling
+the GitHub Actions bill for duplicate data — so `daily-fetch.yml` and
+`historical-fetch.yml` are gone, not just unscheduled.
+
+> **Note:** deleting them on a branch is not enough on its own. GitHub runs
+> scheduled workflows from the repository's **default branch**, so the crons
+> keep firing until this change lands there (or the workflows are disabled
+> from the Actions tab, or the repository is archived).
 
 This repository is kept for reference/history. New work should happen in
 linjelogg.
